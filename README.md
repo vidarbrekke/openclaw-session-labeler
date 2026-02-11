@@ -23,6 +23,38 @@ openclaw hooks install /path/to/openclaw-session-labeler
 openclaw hooks enable session-labeler
 ```
 
+### Activation (important)
+
+After installing/enabling, **restart the OpenClaw gateway process** so hooks are reloaded.
+
+Then verify it is active:
+
+```bash
+openclaw hooks list
+openclaw hooks check
+openclaw hooks info session-labeler
+```
+
+Expected result: `session-labeler` appears as enabled/eligible and will run on `/new`, `/reset`, and `/stop`.
+
+### One-command install (script)
+
+```bash
+./scripts/install-session-labeler.sh /path/to/openclaw-session-labeler
+```
+
+The script performs:
+1. `openclaw hooks install <path>`
+2. `openclaw hooks enable session-labeler`
+3. Gateway restart attempt (`openclaw gateway restart` then `openclaw restart`)
+4. Verification (`hooks list/check/info`)
+
+If your environment uses a custom restart flow, provide one:
+
+```bash
+RESTART_CMD="your-restart-command" ./scripts/install-session-labeler.sh /path/to/openclaw-session-labeler
+```
+
 ### Manual placement
 
 Copy the `hooks/session-labeler/` directory to `~/.openclaw/hooks/`:
