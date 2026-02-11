@@ -34,6 +34,23 @@ require_cmd() {
   fi
 }
 
+contains_text() {
+  local needle="$1"
+  local haystack="$2"
+  if command -v rg >/dev/null 2>&1; then
+    printf '%s\n' "$haystack" | rg -q --fixed-strings "$needle"
+    return $?
+  fi
+  if command -v grep >/dev/null 2>&1; then
+    printf '%s\n' "$haystack" | grep -Fq "$needle"
+    return $?
+  fi
+  case "$haystack" in
+    *"$needle"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 attempt_restart() {
   if [[ -n "$RESTART_CMD" ]]; then
     log "Restarting gateway using RESTART_CMD: $RESTART_CMD"
@@ -81,7 +98,7 @@ verify_enabled() {
   fi
   printf '%s\n' "$list_output"
 
-  if ! printf '%s\n' "$list_output" | rg -q "$HOOK_NAME"; then
+  if ! contains_text "$HOOK_NAME" "$list_output"; then
     warn "Hook '$HOOK_NAME' not found in hooks list output."
     return 1
   fi
@@ -108,7 +125,6 @@ verify_enabled() {
 
 main() {
   require_cmd openclaw
-  require_cmd rg
 
   [[ -d "$HOOK_PATH" ]] || fail "Hook path is not a directory: $HOOK_PATH"
   [[ -f "$HOOK_PATH/package.json" ]] || warn "No package.json found at $HOOK_PATH (continuing, install may still work)"
