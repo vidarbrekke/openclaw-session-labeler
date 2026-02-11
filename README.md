@@ -73,9 +73,10 @@ Optional settings:
 
 ```bash
 npm install
-npm test           # Run all 66 tests
+npm test           # Run all 72 tests
 npm run test:watch # Watch mode
 npm run typecheck  # TypeScript checks
+npm run validate   # Hook metadata + typecheck + tests + packaging dry-run
 ```
 
 ## Project Structure

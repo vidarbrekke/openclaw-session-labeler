@@ -20,7 +20,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "validate:hook": "node scripts/validate-hook-pack.mjs",
+    "validate:pack": "node scripts/validate-packaging.mjs",
+    "validate": "npm run validate:hook && npm run typecheck && npm test && npm run validate:pack"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
