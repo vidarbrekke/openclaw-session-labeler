@@ -14,17 +14,46 @@ Auto-labels sessions with a short, descriptive name (**≤ 28 characters**) afte
 
 **Label examples:** `Stripe Webhook Setup` · `React Auth Flow` · `K8s Deploy Pipeline` · `Newsletter Email Draft`
 
+### When it runs
+
+- **Takes effect immediately** after the gateway is restarted (the install script restarts it for you). It stays enabled across future restarts — no extra step.
+- **Only sessions you end** — The hook runs when you issue `/new`, `/reset`, or `/stop`. It labels the session that is *ending* then. It does **not** go back and label old sessions; only sessions you end from now on will get a label.
+- **Default model** — Uses OpenClaw’s **default model** (`agents.defaults.model.primary` from your config) when the hook runs. Override with `SESSION_LABELER_MODEL` if needed. If no API key is set, it uses a heuristic keyword fallback (no API call).
+- **Runs automatically** — Once enabled, it is loaded on every gateway/frontend restart. No need to trigger it manually.
+
 ## Installation
 
-### As a hook pack
+This folder is a **self-contained hook pack**. Use it from this directory.
 
-**Sharing with others:** The `dist/` directory is a self-contained hook pack. Copy or zip `dist/` and share it; recipients run `openclaw hooks install .` (or `./install-session-labeler.sh .`) from that folder.
+### Recommended: one-command install (script)
+
+From this directory:
 
 ```bash
-# From the repo root (session_labler):
-openclaw hooks install .
+./install-session-labeler.sh .
+```
 
-# From the shared dist folder (after copying dist/ to someone):
+Use this for both first install and **updates**. If the hook is already installed, the script will ask to remove the old copy and reinstall from this folder.  
+If you run `openclaw hooks install .` directly instead, OpenClaw will say **"hook pack already exists … (delete it first)"** — use the script above, or remove the folder first: `rm -rf ~/.openclaw/hooks/session-labeler` then run `openclaw hooks install .` again.
+
+The script will:
+1. Install (or replace) the hook pack
+2. Enable `session-labeler`
+3. Install a **skill stub** into `~/.openclaw/skills/session-labeler/` so **Session Labeler** appears in the Clawbot desktop Skills list (the hook itself lives under Hooks; the stub is for visibility only)
+4. Try to restart the gateway (`openclaw gateway restart` / `openclaw restart`)
+5. Run verification (`hooks list` / `check` / `info`)
+
+Custom restart command:
+
+```bash
+RESTART_CMD="your-restart-command" ./install-session-labeler.sh .
+```
+
+### Manual: openclaw hooks install
+
+Only if the hook is **not** already installed:
+
+```bash
 openclaw hooks install .
 openclaw hooks enable session-labeler
 ```
@@ -42,24 +71,6 @@ openclaw hooks info session-labeler
 ```
 
 Expected result: `session-labeler` appears as enabled/eligible and will run on `/new`, `/reset`, and `/stop`.
-
-### One-command install (script)
-
-From the hook pack directory (repo root or shared `dist/` folder):
-
-```bash
-./scripts/install-session-labeler.sh .   # repo
-# or
-./install-session-labeler.sh .          # inside shared dist/
-```
-
-The script will prompt to replace an existing installation if needed, then install, enable, attempt restart, and verify.
-
-Custom restart flow:
-
-```bash
-RESTART_CMD="your-restart-command" ./install-session-labeler.sh .
-```
 
 ### Manual placement
 
@@ -117,16 +128,6 @@ npm run typecheck  # TypeScript checks
 npm run validate   # Hook metadata + typecheck + tests + packaging dry-run
 ```
 
-### Creating the distributable (`dist/`)
-
-Run `./create_dist.sh` (or `npm run dist`) to build the self-contained hook pack:
-
-- Bumps the **patch** version in `package.json` (e.g. `0.1.0` → `0.1.1`)
-- Recreates `dist/` with only distributable files: `package.json`, `hooks/`, `src/`, `README.md`, `LICENSE`, `CHANGELOG.md`, `install-session-labeler.sh`
-- Writes `dist/VERSION` with the new version and build date
-
-The dist README is maintained in `scripts/README.dist.md` and copied to `dist/README.md`. Share the `dist/` folder (or zip it) for distribution.
-
 ## Project Structure
 
 ```
@@ -146,10 +147,6 @@ hooks/session-labeler/
 
 tests/                  66 tests (unit + integration)
 ```
-
-## Docs
-
-- [Implementation plan](./openclaw-auto-session-labeling-implementation-plan.md) — architecture, flow, sanitization rules, and test plan.
 
 ## License
 

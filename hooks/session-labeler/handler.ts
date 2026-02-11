@@ -46,6 +46,7 @@ interface HookEvent {
       agents?: {
         defaults?: {
           sessionsDir?: string;
+          model?: { primary?: string; fallbacks?: string[] };
           [key: string]: unknown;
         };
         [key: string]: unknown;
@@ -234,13 +235,15 @@ function resolveTranscriptPath(
 /**
  * Create an LLM client from the event context.
  *
- * Currently uses a simple heuristic-based approach since we don't have
- * direct access to OpenClaw's internal model runner from hooks.
- * When OpenClaw exposes an LLM API for hooks, this can be updated.
+ * Uses OpenClaw's default model (agents.defaults.model.primary) when available,
+ * otherwise SESSION_LABELER_MODEL or gpt-4o-mini. Calls OpenAI-compatible
+ * chat/completions (OpenRouter, Ollama, etc. when OPENAI_BASE_URL is set).
  */
-function createLlmClient(_event: HookEvent): LlmClient {
+function createLlmClient(event: HookEvent): LlmClient {
   const apiKey = process.env.OPENAI_API_KEY;
-  const model = process.env.SESSION_LABELER_MODEL ?? "gpt-4o-mini";
+  const primaryFromConfig = (event.context.cfg as { agents?: { defaults?: { model?: { primary?: string } } } })?.agents?.defaults?.model?.primary;
+  const model =
+    process.env.SESSION_LABELER_MODEL ?? primaryFromConfig ?? "gpt-4o-mini";
   const endpoint =
     process.env.OPENAI_BASE_URL?.replace(/\/$/, "") ??
     "https://api.openai.com/v1";

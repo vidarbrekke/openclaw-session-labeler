@@ -1,6 +1,6 @@
 {
   "name": "@openclaw/session-labeler",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "Gives sessions a friendly name — auto-labels OpenClaw sessions after 3 user requests",
   "type": "module",
   "license": "MIT",
@@ -23,7 +23,8 @@
     "typecheck": "tsc --noEmit",
     "validate:hook": "node scripts/validate-hook-pack.mjs",
     "validate:pack": "node scripts/validate-packaging.mjs",
-    "validate": "npm run validate:hook && npm run typecheck && npm test && npm run validate:pack"
+    "validate": "npm run validate:hook && npm run typecheck && npm test && npm run validate:pack",
+    "dist": "./create_dist.sh"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
