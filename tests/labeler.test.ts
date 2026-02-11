@@ -100,4 +100,18 @@ describe("heuristicLabel", () => {
     const result = heuristicLabel(makeInput({ max_chars: 15 }));
     expect(result.length).toBeLessThanOrEqual(15);
   });
+
+  it("filters common filler words from fallback labels", () => {
+    const result = heuristicLabel({
+      requests: [
+        "Please help me with WooCommerce plugin setup",
+        "I need help with WooCommerce checkout tax settings",
+        "Can you help with WooCommerce shipping zones",
+      ],
+      max_chars: 28,
+    });
+    expect(result.toLowerCase()).toContain("woo");
+    expect(result.toLowerCase()).not.toContain("help");
+    expect(result.toLowerCase()).not.toContain("please");
+  });
 });

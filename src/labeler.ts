@@ -1,6 +1,7 @@
 import { sanitize } from "./sanitize.js";
 import { enforceMaxLength } from "./enforce-length.js";
 import { buildPrompt } from "./prompt.js";
+import { STOP_WORDS } from "./stop-words.js";
 import type { LlmClient, LabelerInput } from "./types.js";
 
 const FALLBACK_LABEL = "General";
@@ -51,7 +52,7 @@ export function heuristicLabel(input: LabelerInput): string {
     .join(" ")
     .split(/\s+/)
     .map((w) => w.replace(/[^a-zA-Z0-9]/g, ""))
-    .filter((w) => w.length > 3);
+    .filter((w) => w.length > 3 && !STOP_WORDS.has(w.toLowerCase()));
 
   // Count word frequency
   const freq = new Map<string, number>();

@@ -11,7 +11,7 @@ import { readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 
 import { extractUserMessages } from "../../src/transcript.js";
-import { generateLabel, heuristicLabel } from "../../src/labeler.js";
+import { generateLabel } from "../../src/labeler.js";
 import {
   setLabel,
   getLabel,
@@ -145,16 +145,16 @@ function resolveSessionsDir(event: HookEvent): string | null {
     return dirname(sessionFile);
   }
 
-  // Try workspace dir + default sessions path
-  const workspaceDir = event.context.workspaceDir;
-  if (workspaceDir) {
-    return join(workspaceDir, ".openclaw", "sessions");
-  }
-
   // Try from config
   const agentConfig = event.context.cfg?.agents?.defaults;
   if (agentConfig?.sessionsDir && typeof agentConfig.sessionsDir === "string") {
     return agentConfig.sessionsDir;
+  }
+
+  // Last-resort fallback for local testing harnesses
+  const workspaceDir = event.context.workspaceDir;
+  if (workspaceDir) {
+    return join(workspaceDir, ".openclaw", "sessions");
   }
 
   return null;

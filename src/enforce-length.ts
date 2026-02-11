@@ -9,26 +9,7 @@
  *  4. Hard truncate to maxChars.
  */
 
-const STOP_WORDS = new Set([
-  "a",
-  "an",
-  "the",
-  "and",
-  "of",
-  "to",
-  "for",
-  "with",
-  "on",
-  "in",
-  "is",
-  "are",
-  "was",
-  "be",
-  "by",
-  "at",
-  "or",
-  "its",
-]);
+import { STOP_WORDS } from "./stop-words.js";
 
 /** Map of case-insensitive long words to compact equivalents. */
 const ABBREVIATIONS: Record<string, string> = {

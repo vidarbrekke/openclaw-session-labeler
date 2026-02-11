@@ -1,5 +1,6 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { SessionLabel } from "./types.js";
 
 /**
@@ -16,6 +17,8 @@ import type { SessionLabel } from "./types.js";
 export interface LabelsMap {
   [sessionKey: string]: SessionLabel;
 }
+
+let writeQueue: Promise<void> = Promise.resolve();
 
 /**
  * Read the labels store from disk.
@@ -39,7 +42,9 @@ export async function writeLabels(
   labels: LabelsMap
 ): Promise<void> {
   await mkdir(dirname(labelsPath), { recursive: true });
-  await writeFile(labelsPath, JSON.stringify(labels, null, 2) + "\n", "utf-8");
+  const tmpPath = `${labelsPath}.${randomUUID()}.tmp`;
+  await writeFile(tmpPath, JSON.stringify(labels, null, 2) + "\n", "utf-8");
+  await rename(tmpPath, labelsPath);
 }
 
 /**
@@ -61,9 +66,13 @@ export async function setLabel(
   sessionKey: string,
   label: SessionLabel
 ): Promise<void> {
-  const labels = await readLabels(labelsPath);
-  labels[sessionKey] = label;
-  await writeLabels(labelsPath, labels);
+  // Serialize read-modify-write operations to avoid lost updates.
+  writeQueue = writeQueue.then(async () => {
+    const labels = await readLabels(labelsPath);
+    labels[sessionKey] = label;
+    await writeLabels(labelsPath, labels);
+  });
+  await writeQueue;
 }
 
 /**

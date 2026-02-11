@@ -4,11 +4,10 @@
  * Steps:
  *  1. Take only the first line (LLMs sometimes return multiple).
  *  2. Trim whitespace.
- *  3. Remove surrounding quotes / backticks / markdown bold markers.
- *  4. Replace newlines / tabs with spaces.
- *  5. Collapse multiple spaces.
+ *  3. Remove leading list markers (- * •).
+ *  4. Replace tabs with spaces and collapse multiple spaces.
+ *  5. Remove surrounding quotes / backticks / markdown bold markers.
  *  6. Remove trailing punctuation (. , ; : ! ?).
- *  7. Remove leading list markers (- * •).
  */
 export function sanitize(raw: string): string {
   if (!raw) return "";

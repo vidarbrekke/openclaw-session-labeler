@@ -36,11 +36,20 @@ export function extractUserMessages(
   jsonl: string,
   limit?: number
 ): string[] {
-  const entries = parseTranscript(jsonl);
   const messages: string[] = [];
+  if (!jsonl) return messages;
 
-  for (const entry of entries) {
+  for (const line of jsonl.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
     if (limit !== undefined && messages.length >= limit) break;
+
+    let entry: TranscriptEntry;
+    try {
+      entry = JSON.parse(trimmed) as TranscriptEntry;
+    } catch {
+      continue;
+    }
 
     if (entry.type !== "message" || entry.role !== "user") continue;
 
