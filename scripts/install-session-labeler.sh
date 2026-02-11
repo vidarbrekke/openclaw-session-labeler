@@ -107,7 +107,19 @@ main() {
   [[ -d "$HOOK_PATH" ]] || fail "Hook path is not a directory: $HOOK_PATH"
   [[ -f "$HOOK_PATH/package.json" ]] || warn "No package.json found at $HOOK_PATH (continuing, install may still work)"
 
-  run_or_fail "Installing hook pack from: $HOOK_PATH" openclaw hooks install "$HOOK_PATH"
+  log "Installing hook pack from: $HOOK_PATH"
+  install_out="$(openclaw hooks install "$HOOK_PATH" 2>&1)" || install_rc=$?
+  if [[ "${install_rc:-0}" -ne 0 ]]; then
+    if [[ "$install_out" == *"already exists"* ]] || [[ "$install_out" == *"already installed"* ]]; then
+      log "Hook pack already installed; continuing with enable and verification."
+    else
+      printf '%s\n' "$install_out" >&2
+      fail "Failed: Installing hook pack from: $HOOK_PATH"
+    fi
+  else
+    printf '%s\n' "$install_out"
+  fi
+
   run_or_fail "Enabling hook: $HOOK_NAME" openclaw hooks enable "$HOOK_NAME"
 
   attempt_restart || true
