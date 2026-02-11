@@ -2,7 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   parseTranscript,
   extractUserMessages,
+  extractUserMessagesFromFile,
 } from "../src/transcript.js";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 
 describe("parseTranscript", () => {
   it("parses JSONL into array of entries", () => {
@@ -120,5 +124,26 @@ describe("extractUserMessages", () => {
 
     const messages = extractUserMessages(jsonl);
     expect(messages).toEqual(["Image analysis request"]);
+  });
+
+  it("extracts from file without loading whole transcript API", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "transcript-file-test-"));
+    try {
+      const file = join(dir, "session.jsonl");
+      const jsonl = [
+        '{"type":"session","id":"sess1"}',
+        '{"type":"message","id":"m1","role":"user","content":"First request"}',
+        '{"type":"message","id":"m2","role":"assistant","content":"Response 1"}',
+        '{"type":"message","id":"m3","role":"user","content":"Second request"}',
+        '{"type":"message","id":"m4","role":"user","content":"Third request"}',
+        '{"type":"message","id":"m5","role":"user","content":"Fourth request"}',
+      ].join("\n");
+      await writeFile(file, jsonl, "utf-8");
+
+      const messages = await extractUserMessagesFromFile(file, 3);
+      expect(messages).toEqual(["First request", "Second request", "Third request"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

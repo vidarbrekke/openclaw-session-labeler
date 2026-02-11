@@ -7,10 +7,9 @@
  * See HOOK.md for documentation.
  */
 
-import { readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 
-import { extractUserMessages } from "../../src/transcript.js";
+import { extractUserMessagesFromFile } from "../../src/transcript.js";
 import { generateLabel } from "../../src/labeler.js";
 import {
   setLabel,
@@ -102,18 +101,24 @@ async function labelSession(
     }
   }
 
-  // 3) Read the session transcript
-  const transcriptContent = await readTranscript(event, sessionsDir);
-  if (!transcriptContent) {
+  // 3) Resolve transcript path
+  const transcriptPath = resolveTranscriptPath(event, sessionsDir);
+  if (!transcriptPath) {
     console.log("[session-labeler] No transcript found, skipping.");
     return;
   }
 
   // 4) Extract user messages
-  const userMessages = extractUserMessages(
-    transcriptContent,
-    config.triggerAfterRequests
-  );
+  let userMessages: string[] = [];
+  try {
+    userMessages = await extractUserMessagesFromFile(
+      transcriptPath,
+      config.triggerAfterRequests
+    );
+  } catch {
+    console.log("[session-labeler] No transcript found, skipping.");
+    return;
+  }
 
   if (userMessages.length < config.triggerAfterRequests) {
     console.log(
@@ -203,33 +208,24 @@ async function persistLabel(
 }
 
 /**
- * Read the transcript file for the ending session.
+ * Resolve transcript file path for the ending session.
  */
-async function readTranscript(
+function resolveTranscriptPath(
   event: HookEvent,
   sessionsDir: string
-): Promise<string | null> {
+): string | null {
   // Use explicit session file if available
   const sessionFile =
     event.context.sessionEntry?.sessionFile ?? event.context.sessionFile;
   if (sessionFile) {
-    try {
-      return await readFile(sessionFile, "utf-8");
-    } catch {
-      // Fall through to ID-based lookup
-    }
+    return sessionFile;
   }
 
   // Derive from session ID
   const sessionId =
     event.context.sessionEntry?.sessionId ?? event.context.sessionId;
   if (sessionId) {
-    const path = join(sessionsDir, `${sessionId}.jsonl`);
-    try {
-      return await readFile(path, "utf-8");
-    } catch {
-      // Transcript not found
-    }
+    return join(sessionsDir, `${sessionId}.jsonl`);
   }
 
   return null;

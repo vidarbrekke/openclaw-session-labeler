@@ -1,3 +1,5 @@
+import { createReadStream } from "node:fs";
+import { createInterface } from "node:readline";
 import type { TranscriptEntry } from "./types.js";
 
 /**
@@ -40,26 +42,54 @@ export function extractUserMessages(
   if (!jsonl) return messages;
 
   for (const line of jsonl.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
     if (limit !== undefined && messages.length >= limit) break;
-
-    let entry: TranscriptEntry;
-    try {
-      entry = JSON.parse(trimmed) as TranscriptEntry;
-    } catch {
-      continue;
-    }
-
-    if (entry.type !== "message" || entry.role !== "user") continue;
-
-    const text = resolveContent(entry.content);
-    if (text) {
-      messages.push(text);
-    }
+    processLineForUserMessage(line, messages);
   }
 
   return messages;
+}
+
+/**
+ * Extract user messages from a JSONL file without loading the full file into memory.
+ */
+export async function extractUserMessagesFromFile(
+  transcriptPath: string,
+  limit?: number
+): Promise<string[]> {
+  const messages: string[] = [];
+  const stream = createReadStream(transcriptPath, { encoding: "utf-8" });
+  const rl = createInterface({ input: stream, crlfDelay: Infinity });
+
+  try {
+    for await (const line of rl) {
+      if (limit !== undefined && messages.length >= limit) break;
+      processLineForUserMessage(line, messages);
+    }
+  } finally {
+    rl.close();
+    stream.destroy();
+  }
+
+  return messages;
+}
+
+function processLineForUserMessage(line: string, messages: string[]): void {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+
+  let entry: TranscriptEntry;
+  try {
+    entry = JSON.parse(trimmed) as TranscriptEntry;
+  } catch {
+    return;
+  }
+
+  if (entry.type !== "message" || entry.role !== "user") return;
+
+  const text = resolveContent(entry.content);
+  if (text) {
+    messages.push(text);
+  }
 }
 
 /**

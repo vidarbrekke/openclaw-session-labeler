@@ -1,6 +1,10 @@
 export { sanitize } from "./sanitize.js";
 export { enforceMaxLength } from "./enforce-length.js";
-export { parseTranscript, extractUserMessages } from "./transcript.js";
+export {
+  parseTranscript,
+  extractUserMessages,
+  extractUserMessagesFromFile,
+} from "./transcript.js";
 export { buildPrompt } from "./prompt.js";
 export {
   readLabels,
