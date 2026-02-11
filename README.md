@@ -6,11 +6,11 @@ Auto-labels sessions with a short, descriptive name (**≤ 28 characters**) afte
 
 ## How It Works
 
-1. You issue `/new` in your OpenClaw chat — a new session starts.
+1. You issue `/new`, `/reset`, or `/stop` in OpenClaw.
 2. This hook inspects the **ending** session's transcript.
 3. Extracts the first 3 user messages.
 4. Generates a concise label (2–5 words, title case).
-5. Persists the label to `labels.json` alongside your session store.
+5. Persists the label into `sessions.json` metadata by default (`labels.json` sidecar mode is optional).
 
 **Label examples:** `Stripe Webhook Setup` · `React Auth Flow` · `K8s Deploy Pipeline` · `Newsletter Email Draft`
 
@@ -47,11 +47,33 @@ openclaw hooks enable session-labeler
 }
 ```
 
+Optional settings:
+
+```json
+{
+  "hooks": {
+    "internal": {
+      "entries": {
+        "session-labeler": {
+          "enabled": true,
+          "triggerAfterRequests": 3,
+          "maxLabelChars": 28,
+          "relabel": false,
+          "persistenceMode": "session_json",
+          "allowSidecarFallback": true,
+          "triggerActions": ["new", "reset", "stop"]
+        }
+      }
+    }
+  }
+}
+```
+
 ## Development
 
 ```bash
 npm install
-npm test           # Run all 62 tests
+npm test           # Run all 66 tests
 npm run test:watch # Watch mode
 npm run typecheck  # TypeScript checks
 ```
@@ -65,14 +87,15 @@ src/
   transcript.ts         Parse JSONL transcripts, extract user messages
   prompt.ts             Build LLM labeling prompt
   labeler.ts            Generate label (LLM + heuristic fallback)
-  labels-store.ts       Read/write labels.json persistence
+  labels-store.ts       Read/write labels.json sidecar persistence
+  session-json-store.ts Read/write label metadata in sessions.json
   types.ts              Shared types and config defaults
 
 hooks/session-labeler/
   HOOK.md               Hook metadata and documentation
-  handler.ts            Hook entry point (fires on command:new)
+  handler.ts            Hook entry point (fires on command:new/reset/stop)
 
-tests/                  62 tests (unit + integration)
+tests/                  66 tests (unit + integration)
 ```
 
 ## Docs

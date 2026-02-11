@@ -71,16 +71,16 @@ describe("session-labeler hook handler", () => {
     event.type = "agent";
     event.action = "bootstrap";
     await handler(event); // Should not throw or create labels
-    const labelsPath = join(sessionsDir, "labels.json");
-    await expect(readFile(labelsPath, "utf-8")).rejects.toThrow();
+    const storePath = join(sessionsDir, "sessions.json");
+    await expect(readFile(storePath, "utf-8")).rejects.toThrow();
   });
 
-  it("skips commands other than 'new'", async () => {
+  it("skips commands outside configured triggerActions", async () => {
     const event = makeEvent();
-    event.action = "stop";
+    event.action = "unknown";
     await handler(event);
-    const labelsPath = join(sessionsDir, "labels.json");
-    await expect(readFile(labelsPath, "utf-8")).rejects.toThrow();
+    const storePath = join(sessionsDir, "sessions.json");
+    await expect(readFile(storePath, "utf-8")).rejects.toThrow();
   });
 
   it("skips when session has fewer than 3 user messages", async () => {
@@ -92,8 +92,8 @@ describe("session-labeler hook handler", () => {
 
     await handler(makeEvent());
 
-    const labelsPath = join(sessionsDir, "labels.json");
-    await expect(readFile(labelsPath, "utf-8")).rejects.toThrow();
+    const storePath = join(sessionsDir, "sessions.json");
+    await expect(readFile(storePath, "utf-8")).rejects.toThrow();
   });
 
   it("generates a label when session has 3+ user messages", async () => {
@@ -109,22 +109,24 @@ describe("session-labeler hook handler", () => {
 
     await handler(makeEvent());
 
-    const labelsPath = join(sessionsDir, "labels.json");
-    const raw = await readFile(labelsPath, "utf-8");
-    const labels = JSON.parse(raw);
+    const storePath = join(sessionsDir, "sessions.json");
+    const raw = await readFile(storePath, "utf-8");
+    const sessions = JSON.parse(raw);
 
-    expect(labels["agent:main:main"]).toBeDefined();
-    expect(labels["agent:main:main"].label.length).toBeGreaterThan(0);
-    expect(labels["agent:main:main"].label.length).toBeLessThanOrEqual(28);
-    expect(labels["agent:main:main"].label_source).toBe("auto");
-    expect(labels["agent:main:main"].label_version).toBe("1.0");
+    expect(sessions["agent:main:main"]).toBeDefined();
+    expect(sessions["agent:main:main"].label.length).toBeGreaterThan(0);
+    expect(sessions["agent:main:main"].label.length).toBeLessThanOrEqual(28);
+    expect(sessions["agent:main:main"].label_source).toBe("auto");
+    expect(sessions["agent:main:main"].label_version).toBe("1.0");
+    expect(sessions["agent:main:main"].label_turn).toBe(3);
   });
 
   it("does not overwrite an existing label", async () => {
-    // Pre-create a label
-    const labelsPath = join(sessionsDir, "labels.json");
-    const existingLabels = {
+    // Pre-create a labeled session entry
+    const storePath = join(sessionsDir, "sessions.json");
+    const existingStore = {
       "agent:main:main": {
+        sessionId: "test-session-001",
         label: "Existing Label",
         label_source: "manual" as const,
         label_turn: 1,
@@ -132,7 +134,7 @@ describe("session-labeler hook handler", () => {
         label_updated_at: "2026-02-10T00:00:00Z",
       },
     };
-    await writeFile(labelsPath, JSON.stringify(existingLabels));
+    await writeFile(storePath, JSON.stringify(existingStore));
 
     const transcript = makeTranscript([
       "New request one",
@@ -146,10 +148,10 @@ describe("session-labeler hook handler", () => {
 
     await handler(makeEvent());
 
-    const raw = await readFile(labelsPath, "utf-8");
-    const labels = JSON.parse(raw);
-    expect(labels["agent:main:main"].label).toBe("Existing Label");
-    expect(labels["agent:main:main"].label_source).toBe("manual");
+    const raw = await readFile(storePath, "utf-8");
+    const sessions = JSON.parse(raw);
+    expect(sessions["agent:main:main"].label).toBe("Existing Label");
+    expect(sessions["agent:main:main"].label_source).toBe("manual");
   });
 
   it("labels are stable across multiple hook invocations", async () => {
@@ -165,24 +167,147 @@ describe("session-labeler hook handler", () => {
 
     await handler(makeEvent());
 
-    const labelsPath = join(sessionsDir, "labels.json");
-    const raw1 = await readFile(labelsPath, "utf-8");
-    const labels1 = JSON.parse(raw1);
-    const firstLabel = labels1["agent:main:main"].label;
+    const storePath = join(sessionsDir, "sessions.json");
+    const raw1 = await readFile(storePath, "utf-8");
+    const sessions1 = JSON.parse(raw1);
+    const firstLabel = sessions1["agent:main:main"].label;
 
     // Run again — should NOT change the label
     await handler(makeEvent());
 
-    const raw2 = await readFile(labelsPath, "utf-8");
-    const labels2 = JSON.parse(raw2);
-    expect(labels2["agent:main:main"].label).toBe(firstLabel);
+    const raw2 = await readFile(storePath, "utf-8");
+    const sessions2 = JSON.parse(raw2);
+    expect(sessions2["agent:main:main"].label).toBe(firstLabel);
   });
 
   it("handles missing transcript gracefully", async () => {
     // No transcript file written — should not throw
     await handler(makeEvent());
 
+    const storePath = join(sessionsDir, "sessions.json");
+    await expect(readFile(storePath, "utf-8")).rejects.toThrow();
+  });
+
+  it("also triggers on /stop action", async () => {
+    const transcript = makeTranscript([
+      "Help me fix checkout taxes",
+      "Need WooCommerce shipping setup",
+      "Add payment gateway notes",
+    ]);
+    await writeFile(join(sessionsDir, "test-session-001.jsonl"), transcript);
+
+    const event = makeEvent();
+    event.action = "stop";
+    await handler(event);
+
+    const storePath = join(sessionsDir, "sessions.json");
+    const raw = await readFile(storePath, "utf-8");
+    const sessions = JSON.parse(raw);
+    expect(sessions["agent:main:main"]?.label).toBeTruthy();
+  });
+
+  it("supports sidecar_labels_json mode via hook config", async () => {
+    const transcript = makeTranscript([
+      "Draft product description",
+      "Improve SEO title",
+      "Add WooCommerce tags",
+    ]);
+    await writeFile(join(sessionsDir, "test-session-001.jsonl"), transcript);
+
+    const event = makeEvent({
+      cfg: {
+        hooks: {
+          internal: {
+            entries: {
+              "session-labeler": {
+                persistenceMode: "sidecar_labels_json",
+              },
+            },
+          },
+        },
+      },
+    });
+    await handler(event);
+
     const labelsPath = join(sessionsDir, "labels.json");
-    await expect(readFile(labelsPath, "utf-8")).rejects.toThrow();
+    const raw = await readFile(labelsPath, "utf-8");
+    const labels = JSON.parse(raw);
+    expect(labels["agent:main:main"]?.label).toBeTruthy();
+  });
+
+  it("respects triggerAfterRequests from hook config", async () => {
+    const transcript = makeTranscript([
+      "Request one",
+      "Request two",
+      "Request three",
+    ]);
+    await writeFile(join(sessionsDir, "test-session-001.jsonl"), transcript);
+
+    const event = makeEvent({
+      cfg: {
+        hooks: {
+          internal: {
+            entries: {
+              "session-labeler": {
+                triggerAfterRequests: 4,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    await handler(event);
+
+    const storePath = join(sessionsDir, "sessions.json");
+    await expect(readFile(storePath, "utf-8")).rejects.toThrow();
+  });
+
+  it("supports relabel=true from hook config", async () => {
+    const storePath = join(sessionsDir, "sessions.json");
+    await writeFile(
+      storePath,
+      JSON.stringify(
+        {
+          "agent:main:main": {
+            sessionId: "test-session-001",
+            label: "Existing Manual Label",
+            label_source: "manual",
+            label_turn: 1,
+            label_version: "1.0",
+            label_updated_at: "2026-02-10T00:00:00Z",
+          },
+        },
+        null,
+        2
+      )
+    );
+
+    const transcript = makeTranscript([
+      "Improve Woo checkout labels",
+      "Configure shipping zones",
+      "Adjust tax settings",
+    ]);
+    await writeFile(join(sessionsDir, "test-session-001.jsonl"), transcript);
+
+    const event = makeEvent({
+      cfg: {
+        hooks: {
+          internal: {
+            entries: {
+              "session-labeler": {
+                relabel: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    await handler(event);
+
+    const raw = await readFile(storePath, "utf-8");
+    const sessions = JSON.parse(raw);
+    expect(sessions["agent:main:main"].label).not.toBe("Existing Manual Label");
+    expect(sessions["agent:main:main"].label_source).toBe("auto");
   });
 });

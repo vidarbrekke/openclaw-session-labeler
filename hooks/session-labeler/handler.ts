@@ -17,8 +17,12 @@ import {
   getLabel,
   labelsPathFromSessionsDir,
 } from "../../src/labels-store.js";
+import {
+  getLabelFromSessionStore,
+  setLabelInSessionStore,
+} from "../../src/session-json-store.js";
 import { DEFAULT_CONFIG } from "../../src/types.js";
-import type { SessionLabel, LlmClient } from "../../src/types.js";
+import type { SessionLabel, LlmClient, SessionLabelerConfig } from "../../src/types.js";
 
 /**
  * Minimal type for the OpenClaw hook event.
@@ -56,13 +60,17 @@ interface HookEvent {
 type HookHandler = (event: HookEvent) => Promise<void>;
 
 const handler: HookHandler = async (event) => {
-  // Only trigger on /new commands (session is ending)
-  if (event.type !== "command" || event.action !== "new") {
+  const config = resolveConfig(event);
+  // Trigger on configured command actions (session is ending)
+  if (
+    event.type !== "command" ||
+    !config.triggerActions.includes(event.action)
+  ) {
     return;
   }
 
   try {
-    await labelSession(event);
+    await labelSession(event, config);
   } catch (err) {
     console.error(
       "[session-labeler] Error:",
@@ -72,8 +80,10 @@ const handler: HookHandler = async (event) => {
   }
 };
 
-async function labelSession(event: HookEvent): Promise<void> {
-  const config = DEFAULT_CONFIG;
+async function labelSession(
+  event: HookEvent,
+  config: SessionLabelerConfig
+): Promise<void> {
   const sessionKey = event.sessionKey;
 
   // 1) Resolve paths
@@ -83,11 +93,9 @@ async function labelSession(event: HookEvent): Promise<void> {
     return;
   }
 
-  const labelsPath = labelsPathFromSessionsDir(sessionsDir);
-
   // 2) Check if already labeled (skip unless relabel is enabled)
   if (!config.relabel) {
-    const existing = await getLabel(labelsPath, sessionKey);
+    const existing = await getExistingLabel(config, sessionsDir, sessionKey);
     if (existing) {
       console.log(`[session-labeler] Session "${sessionKey}" already labeled: "${existing.label}"`);
       return;
@@ -125,12 +133,12 @@ async function labelSession(event: HookEvent): Promise<void> {
   const sessionLabel: SessionLabel = {
     label,
     label_source: "auto",
-    label_turn: userMessages.length,
+    label_turn: config.triggerAfterRequests,
     label_version: "1.0",
     label_updated_at: new Date().toISOString(),
   };
 
-  await setLabel(labelsPath, sessionKey, sessionLabel);
+  await persistLabel(config, sessionsDir, sessionKey, sessionLabel);
   console.log(`[session-labeler] Labeled "${sessionKey}": "${label}"`);
 }
 
@@ -158,6 +166,40 @@ function resolveSessionsDir(event: HookEvent): string | null {
   }
 
   return null;
+}
+
+async function getExistingLabel(
+  config: SessionLabelerConfig,
+  sessionsDir: string,
+  sessionKey: string
+): Promise<SessionLabel | undefined> {
+  if (config.persistenceMode === "sidecar_labels_json") {
+    return getLabel(labelsPathFromSessionsDir(sessionsDir), sessionKey);
+  }
+  return getLabelFromSessionStore(sessionsDir, sessionKey);
+}
+
+async function persistLabel(
+  config: SessionLabelerConfig,
+  sessionsDir: string,
+  sessionKey: string,
+  sessionLabel: SessionLabel
+): Promise<void> {
+  if (config.persistenceMode === "sidecar_labels_json") {
+    await setLabel(labelsPathFromSessionsDir(sessionsDir), sessionKey, sessionLabel);
+    return;
+  }
+
+  try {
+    await setLabelInSessionStore(sessionsDir, sessionKey, sessionLabel);
+  } catch (err) {
+    if (!config.allowSidecarFallback) throw err;
+    console.warn(
+      "[session-labeler] session_json persistence failed; falling back to labels.json:",
+      err instanceof Error ? err.message : String(err)
+    );
+    await setLabel(labelsPathFromSessionsDir(sessionsDir), sessionKey, sessionLabel);
+  }
 }
 
 /**
@@ -201,13 +243,90 @@ async function readTranscript(
  * When OpenClaw exposes an LLM API for hooks, this can be updated.
  */
 function createLlmClient(_event: HookEvent): LlmClient {
-  // TODO: Integrate with OpenClaw's model runner when hook LLM API is available.
-  // For now, the labeler will fall back to heuristic keyword extraction.
+  const apiKey = process.env.OPENAI_API_KEY;
+  const model = process.env.SESSION_LABELER_MODEL ?? "gpt-4o-mini";
+  const endpoint =
+    process.env.OPENAI_BASE_URL?.replace(/\/$/, "") ??
+    "https://api.openai.com/v1";
+
+  if (!apiKey) {
+    // No provider configured: labeler will fall back to heuristic keyword extraction.
+    return {
+      async complete(_prompt: string): Promise<string> {
+        throw new Error("LLM API key not configured");
+      },
+    };
+  }
+
   return {
-    async complete(_prompt: string): Promise<string> {
-      throw new Error("LLM API not yet wired — using heuristic fallback");
+    async complete(prompt: string): Promise<string> {
+      const response = await fetch(`${endpoint}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.2,
+          max_tokens: 40,
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`LLM request failed (${response.status}): ${body}`);
+      }
+
+      const data = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const content = data.choices?.[0]?.message?.content;
+      if (!content) throw new Error("LLM response did not include content");
+      return content;
     },
   };
+}
+
+function resolveConfig(event: HookEvent): SessionLabelerConfig {
+  const merged: SessionLabelerConfig = { ...DEFAULT_CONFIG };
+  const entry = (
+    event.context.cfg as {
+      hooks?: {
+        internal?: {
+          entries?: Record<string, Record<string, unknown>>;
+        };
+      };
+    }
+  )?.hooks?.internal?.entries?.["session-labeler"];
+  if (!entry) return merged;
+
+  if (typeof entry.triggerAfterRequests === "number") {
+    merged.triggerAfterRequests = entry.triggerAfterRequests;
+  }
+  if (typeof entry.maxLabelChars === "number") {
+    merged.maxLabelChars = entry.maxLabelChars;
+  }
+  if (typeof entry.relabel === "boolean") {
+    merged.relabel = entry.relabel;
+  }
+  if (
+    entry.persistenceMode === "session_json" ||
+    entry.persistenceMode === "sidecar_labels_json"
+  ) {
+    merged.persistenceMode = entry.persistenceMode;
+  }
+  if (typeof entry.allowSidecarFallback === "boolean") {
+    merged.allowSidecarFallback = entry.allowSidecarFallback;
+  }
+  if (Array.isArray(entry.triggerActions)) {
+    merged.triggerActions = entry.triggerActions
+      .filter((v): v is string => typeof v === "string")
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+  return merged;
 }
 
 export default handler;

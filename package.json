@@ -4,6 +4,13 @@
   "description": "Gives sessions a friendly name — auto-labels OpenClaw sessions after 3 user requests",
   "type": "module",
   "license": "MIT",
+  "files": [
+    "hooks/",
+    "src/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "openclaw": {
     "hooks": [
       "./hooks/session-labeler"

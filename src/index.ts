@@ -9,6 +9,10 @@ export {
   setLabel,
   labelsPathFromSessionsDir,
 } from "./labels-store.js";
+export {
+  getLabelFromSessionStore,
+  setLabelInSessionStore,
+} from "./session-json-store.js";
 export type {
   TranscriptEntry,
   SessionLabel,

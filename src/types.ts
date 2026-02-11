@@ -50,10 +50,19 @@ export interface SessionLabelerConfig {
   maxLabelChars: number;
   /** Whether to overwrite existing labels (default: false) */
   relabel: boolean;
+  /** Where to persist labels */
+  persistenceMode: "session_json" | "sidecar_labels_json";
+  /** Fall back to sidecar labels.json if session JSON persistence fails */
+  allowSidecarFallback: boolean;
+  /** Command actions that should trigger labeling */
+  triggerActions: string[];
 }
 
 export const DEFAULT_CONFIG: SessionLabelerConfig = {
   triggerAfterRequests: 3,
   maxLabelChars: 28,
   relabel: false,
+  persistenceMode: "session_json",
+  allowSidecarFallback: true,
+  triggerActions: ["new", "reset", "stop"],
 };

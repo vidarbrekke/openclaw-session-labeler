@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Atomic label writes** — Labels are written to a temp file then renamed into place to avoid partial writes on crash or interrupt.
 - **Concurrent-update safety** — Read-modify-write for `labels.json` is serialized so concurrent hook invocations cannot overwrite each other’s labels.
 - **Shared stop-word list** — New `src/stop-words.ts` used by both length enforcement and heuristic labeler; heuristic now filters common filler words (e.g. help, need, please) for better fallback labels.
+- **Session JSON metadata persistence** — Labels can now be written directly into `sessions.json` (`label`, `label_source`, `label_turn`, `label_version`, `label_updated_at`).
+- **Optional OpenAI-compatible LLM client** — When `OPENAI_API_KEY` is configured, label generation can use a live model call; heuristic fallback remains.
 - **Test** — `tests/labels-store.test.ts` for concurrent `setLabel` behavior.
 - **Test** — Heuristic filler-word filtering in `tests/labeler.test.ts`.
 
@@ -18,12 +20,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Lazy transcript parsing** — `extractUserMessages()` parses JSONL line-by-line and stops once the requested number of user messages is reached, reducing work for long sessions.
 - **Session-dir resolution** — Hook prefers `sessionFile` and config-derived paths; workspace-based fallback is last-resort only.
+- **Trigger coverage** — Hook now handles `command:new`, `command:reset`, and `command:stop` (configurable).
+- **Config support** — Hook now reads settings from `hooks.internal.entries.session-labeler` (`triggerAfterRequests`, `maxLabelChars`, `relabel`, `persistenceMode`, `allowSidecarFallback`, `triggerActions`).
 - **Docs** — `sanitize.ts` step comment updated to match actual code order.
 - **Cleanup** — Removed unused `heuristicLabel` import from the hook handler.
 
 ### Fixed
 
 - Race condition where two `command:new` events could cause one label to be lost when updating `labels.json`.
+- Incorrect `label_turn` semantics (now set to configured trigger threshold, default `3`).
 
 ---
 
