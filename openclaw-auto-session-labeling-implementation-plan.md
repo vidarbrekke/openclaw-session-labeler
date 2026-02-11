@@ -1,424 +1,242 @@
 # OpenClaw: Auto-Label Sessions After 3 Requests (≤ 28 chars)
 
 ## Goal
-Automatically assign a short, descriptive **session label** once a session has processed the first **3 user requests**, writing the label into the session’s **JSON metadata**. The label must be **≤ 28 characters** and stable (no churn unless explicitly enabled).
-
-This plan is written so an OpenClaw agent (or developer) can implement it **end-to-end**.
+Automatically assign a short, descriptive **session label** once a session has processed at least **3 user requests**, writing the label into a persistent **labels store**. The label must be **≤ 28 characters** and stable (no churn unless explicitly enabled).
 
 ---
 
 ## High-level architecture
 
 **Split responsibilities:**
-1. **Lifecycle Hook Handler (deterministic)**
-   - Decides **when** to label a session.
-   - Loads/saves session JSON.
-   - Calls the labeler skill once the threshold is met.
+1. **Hook Handler (deterministic)** — TypeScript hook running on `command:new`
+   - Decides **when** to label a session (on session end, if ≥ 3 user messages).
+   - Reads the JSONL transcript, extracts user messages.
+   - Calls the labeler module.
+   - Sanitizes/enforces the final label deterministically.
+   - Persists to `labels.json`.
 
-2. **Labeler Skill (LLM-powered)**
+2. **Labeler Module (LLM-powered with heuristic fallback)**
    - Decides **what** the label should be from the first 3 user requests.
    - Outputs **one line only**: the label.
-   - Post-processing + enforcement occurs in the hook handler.
+   - Falls back to keyword extraction when LLM is unavailable.
 
-**Why split this way:** hooks stay predictable; LLM logic is contained.
-
----
-
-## Assumptions (adjust to your repo)
-
-- Session metadata is stored as JSON in something like:
-  - `~/.openclaw/sessions/<session_id>.json` **or**
-  - `<workspace>/.openclaw/sessions/<session_id>.json`
-- OpenClaw supports lifecycle events (startup/shutdown and at least one “turn complete” / “message processed” / “step finished” style hook).
-- You can call an LLM from a skill (existing pattern in OpenClaw).
-- Your runtime can read/write JSON files in the workspace.
-
-If any of these differ, adapt the file paths and hook event name; the logic stays the same.
+**Why split this way:** hooks stay predictable; LLM logic is contained and testable.
 
 ---
 
-## Deliverables
+## OpenClaw Integration
 
-You will implement:
+### How it fits OpenClaw's hook system
 
-1. **Session JSON schema extension** (non-breaking).
-2. **Hook handler module** that:
-   - Tracks processed user requests.
-   - Triggers once at request #3.
-   - Calls `session_labeler` skill.
-   - Sanitizes/enforces the final label.
-   - Writes it back to JSON.
-3. **Labeler skill**:
-   - Prompt + input shaping.
-   - Returns a single short label.
-4. **Tests**:
-   - Unit tests for sanitization and truncation.
-   - Integration tests for hook behavior.
+This is implemented as an **OpenClaw hook pack** — an npm-style package with `openclaw.hooks` in `package.json`. The hook:
+
+- **Fires on** `command:new` (when the user starts a new session, the ending session gets labeled).
+- **Reads** the ending session's JSONL transcript from `~/.openclaw/agents/<agentId>/sessions/`.
+- **Writes** labels to a separate `labels.json` file (not directly into `sessions.json`, which is Gateway-owned).
+- **Requires** `workspace.dir` config and `node` on PATH.
+
+### Why `command:new` instead of per-message?
+
+OpenClaw's current hook events are: `command:new`, `command:reset`, `command:stop`, `agent:bootstrap`, `gateway:startup`. A per-message event (`message:received`) is planned but not yet available. Once it ships, this hook can be updated to label sessions **live** after the 3rd request instead of retroactively on session end.
+
+### Installation
+
+```bash
+openclaw hooks install /path/to/openclaw-session-labeler
+openclaw hooks enable session-labeler
+```
+
+Or place the `hooks/session-labeler/` directory in `~/.openclaw/hooks/`.
 
 ---
 
-## 1) Session JSON schema changes
+## Project Structure
 
-### Add fields (safe defaults)
-Add these fields to the session JSON once labeling runs:
+```
+openclaw-session-labeler/
+├── package.json              # Hook pack with openclaw.hooks config
+├── hooks/
+│   └── session-labeler/
+│       ├── HOOK.md           # Hook metadata (events, requirements)
+│       └── handler.ts        # Hook entry point
+├── src/
+│   ├── types.ts              # Shared types and config defaults
+│   ├── sanitize.ts           # Clean raw LLM output
+│   ├── enforce-length.ts     # Smart shorten + hard truncate (≤28 chars)
+│   ├── transcript.ts         # Parse JSONL transcripts, extract user messages
+│   ├── prompt.ts             # Build LLM labeling prompt
+│   ├── labeler.ts            # Generate label (LLM + heuristic fallback)
+│   ├── labels-store.ts       # Read/write labels.json persistence
+│   └── index.ts              # Barrel exports
+├── tests/
+│   ├── sanitize.test.ts      # 23 tests
+│   ├── enforce-length.test.ts# 12 tests
+│   ├── transcript.test.ts    # 10 tests
+│   ├── labeler.test.ts       # 10 tests
+│   └── handler.test.ts       # 7 tests (integration)
+├── tsconfig.json
+└── vitest.config.ts
+```
 
+---
+
+## 1) Label Persistence
+
+### Labels store (`labels.json`)
+
+Labels are persisted in `labels.json` alongside the session store:
+
+```
+~/.openclaw/agents/<agentId>/sessions/labels.json
+```
+
+Format:
 ```json
 {
-  "label": "Stripe newsletter ideas",
-  "label_source": "auto",
-  "label_turn": 3,
-  "label_version": "1.0",
-  "label_updated_at": "2026-02-11T18:00:00Z"
+  "agent:main:main": {
+    "label": "Stripe Webhook Setup",
+    "label_source": "auto",
+    "label_turn": 3,
+    "label_version": "1.0",
+    "label_updated_at": "2026-02-11T18:00:00Z"
+  }
 }
 ```
 
-**Notes**
-- `label` is the only field required by downstream UI.
-- `label_turn` = the number of processed user requests when created (should be `3` here).
-- `label_version` allows future migrations.
-- If you already have a metadata namespace (e.g., `meta.label`), use it; keep consistent.
+**Why a separate file?** `sessions.json` is owned by the Gateway and may rewrite/rehydrate entries. A separate labels file avoids conflicts while still being co-located for easy discovery.
 
-### Optional: tracking counter
-If your session JSON does not already track turns, add one:
+---
 
+## 2) Hook Handler Flow
+
+On each `command:new` event:
+
+1. **Filter**: only trigger on `type === "command"` and `action === "new"`.
+2. **Resolve sessions dir** from event context (`sessionFile`, `workspaceDir`, or config).
+3. **Check existing label**: if `labels.json` already has a label for this `sessionKey`, exit (unless `relabel: true`).
+4. **Read transcript**: load the JSONL file for the ending session.
+5. **Extract user messages**: parse entries with `type === "message"` and `role === "user"`.
+6. **Threshold check**: if fewer than 3 user messages, exit.
+7. **Generate label**: call LLM (or heuristic fallback).
+8. **Sanitize + enforce length**: deterministic post-processing.
+9. **Persist**: write to `labels.json`.
+
+---
+
+## 3) Sanitization (deterministic, in code)
+
+Given raw LLM output:
+
+1. Take only the first non-empty line.
+2. Trim whitespace.
+3. Remove leading list markers (`- `, `* `, `• `).
+4. Replace tabs with spaces, collapse multiple spaces.
+5. Remove surrounding quotes / backticks / markdown bold markers.
+6. Remove trailing punctuation (`. , ; : ! ?`).
+
+---
+
+## 4) Length Enforcement (≤ 28 chars)
+
+Smart shortening pipeline:
+
+1. **Remove stop-words** (a, an, the, and, of, to, for, with, on, in, is, are, was, be, by, at, or, its).
+2. **Abbreviate known long words**:
+   - configuration → Config, documentation → Docs, performance → Perf
+   - implementation → Impl, integration → Integ, development → Dev
+   - authentication → Auth, management → Mgmt, kubernetes → K8s
+   - (see full map in `src/enforce-length.ts`)
+3. **Keep most informative words** (longest words, original order, up to 4).
+4. **Hard truncate** to 28 chars (no trailing space).
+
+Fallback: if label becomes empty → `"General"`.
+
+---
+
+## 5) LLM Prompt
+
+System prompt instructs the model to:
+- Output ONE label only, plain text
+- Max 28 characters, 2–5 words
+- Title case, concrete nouns preferred
+- No quotes, no trailing punctuation
+- Ignore greetings/filler, pick dominant topic
+
+Includes 12 examples of good labels to anchor style.
+
+User prompt contains:
+- Workspace name (if available)
+- The first 3 user requests (truncated to 200 chars each)
+
+---
+
+## 6) Heuristic Fallback
+
+When LLM is unavailable or returns garbage:
+
+1. Extract all words > 3 chars from the 3 user requests.
+2. Count word frequency.
+3. Take top 3 words (by frequency, then length).
+4. Title-case and join.
+5. Enforce max length.
+6. If still empty → `"General"`.
+
+---
+
+## 7) Configuration
+
+In OpenClaw config:
 ```json
 {
-  "processed_user_requests": 2
+  "hooks": {
+    "internal": {
+      "enabled": true,
+      "entries": {
+        "session-labeler": {
+          "enabled": true
+        }
+      }
+    }
+  }
 }
 ```
 
-If OpenClaw already tracks this elsewhere, use that source of truth.
+Hook settings (in `src/types.ts`):
+- `triggerAfterRequests: 3` — minimum user messages before labeling
+- `maxLabelChars: 28` — hard character limit
+- `relabel: false` — whether to overwrite existing labels
 
 ---
 
-## 2) Hook handler implementation
+## 8) Testing (62 tests, all passing)
 
-### Hook: choose the right event
-Prefer an event that occurs after each user request is fully processed, e.g.:
+### Unit tests
+- **`sanitize.test.ts`** (23 tests): whitespace, quotes, backticks, markdown bold, bullet markers, trailing punctuation, multi-line, edge cases.
+- **`enforce-length.test.ts`** (12 tests): short labels unchanged, stop-word removal, abbreviation, word order preservation, hard truncation, edge cases.
+- **`transcript.test.ts`** (10 tests): JSONL parsing, blank/malformed lines, user message extraction, multimodal content, limit parameter.
+- **`labeler.test.ts`** (10 tests): LLM integration, sanitization pipeline, length enforcement, fallback behavior, heuristic label generation.
 
-- `on_turn_complete`
-- `after_request`
-- `after_message_processed`
-- `on_step_finished` (if “step” corresponds to one user request)
-
-If OpenClaw only provides startup/shutdown, implement this on shutdown as a fallback, but the requested behavior is “after the first 3 requests,” so **turn-complete** is ideal.
-
-### Hook responsibilities
-On each hook invocation:
-
-1. **Locate session JSON**
-2. **Load JSON**
-3. **Update / compute `processed_user_requests`**
-4. If `label` exists → exit
-5. If requests < 3 → exit
-6. Gather **first 3 user requests**
-7. Call labeler skill
-8. Sanitize + enforce **≤ 28 chars**
-9. Write label fields back to session JSON
+### Integration tests
+- **`handler.test.ts`** (7 tests): event filtering, threshold check, label generation, no-overwrite, stability across invocations, missing transcript handling.
 
 ---
 
-## 2.1) Locate session JSON (path strategy)
+## 9) Future Enhancements
 
-Implement a function `resolve_session_json_path(session_id)`:
-
-- First check: `<workspace>/.openclaw/sessions/<session_id>.json`
-- If not found: `~/.openclaw/sessions/<session_id>.json`
-- If still not found: search a configured directory from OpenClaw config (recommended).
-
-Add config keys:
-
-```yaml
-sessions:
-  dir: ".openclaw/sessions"
-```
-
-Resolve relative to workspace root.
+1. **Wire LLM client**: integrate with OpenClaw's internal model runner when hook LLM API is available (currently uses heuristic fallback).
+2. **Live labeling**: switch to `message:received` event when it ships, to label after exactly 3 requests instead of retroactively.
+3. **Relabel on topic drift**: optionally re-label at turn 6 if conversation topic shifts significantly.
+4. **UI integration**: surface `labels.json` in OpenClaw's `/status` output and Control UI.
+5. **Confidence scoring**: if the model returns a generic label, re-run with stronger constraints.
 
 ---
 
-## 2.2) Extract first 3 user requests
-
-Prefer a reliable data source:
-- If session JSON stores messages, use that.
-- Else, read the conversation transcript file if one exists.
-- Else, if OpenClaw provides the current request content and an API to fetch prior turns, use that.
-
-### Target shape passed to the skill
-Send an object like:
-
-```json
-{
-  "session_id": "abc123",
-  "requests": [
-    "User request 1…",
-    "User request 2…",
-    "User request 3…"
-  ],
-  "workspace_name": "Mother Knitter Ops",
-  "max_chars": 28
-}
-```
-
-**Important:** include only user requests, not system prompts or tool logs.
-
----
-
-## 3) Labeler skill implementation
-
-### Skill name
-`session_labeler`
-
-### Input
-- `requests: string[]` (length 3, required)
-- `workspace_name?: string` (optional)
-- `max_chars: number` (fixed at 28)
-
-### Output
-- `label: string` (single line text)
-- No JSON needed unless your skill runner prefers structured output. If structured output is used, still ensure `label` is a plain string.
-
-### Prompt (recommended)
-Use a strict title-generator prompt:
-
-**System / Instruction**
-- Output **ONE label only**
-- **No quotes**
-- **No punctuation at the end**
-- **2–5 words**
-- Prefer concrete nouns
-- Ignore greetings / fluff
-
-**User content**
-- Workspace name (if present)
-- The 3 user requests verbatim
-
-**Examples**
-Include 8–12 examples of good labels to anchor brevity.
-
-#### Example prompt template
-```
-You generate a short session label.
-
-Rules:
-- Output ONE label only, plain text.
-- Max 28 characters.
-- 2–5 words. Prefer concrete nouns.
-- No quotes. No trailing period.
-- Ignore greetings and filler.
-- If multiple topics, pick the dominant one.
-
-Workspace: {{workspace_name}}
-
-Requests:
-1) {{req1}}
-2) {{req2}}
-3) {{req3}}
-
-Return only the label.
-```
-
----
-
-## 4) Sanitization & enforcement (must be in code)
-
-Even with a good prompt, enforce constraints deterministically.
-
-### 4.1) Sanitization steps
-Given the model output `raw`:
-
-1. `label = raw.strip()`
-2. Remove surrounding quotes/backticks:
-   - trim leading/trailing: `" ' ` ``
-3. Replace newlines/tabs with spaces.
-4. Collapse multiple spaces to single.
-5. Remove trailing punctuation: `. , ; : ! ?` (only at end)
-6. Remove any leading list markers: `- `, `* `, `• `
-
-### 4.2) Enforce max length (≤ 28)
-Prefer “smart shorten” before hard truncation:
-
-**Smart shorten algorithm**
-- If `len(label) <= 28`: done.
-- Else:
-  1) Remove stop-words (a, an, the, and, of, to, for, with, on, in) while keeping order.
-  2) Replace long phrases with compact equivalents:
-     - “configuration” → “config”
-     - “newsletter” → “newsletter” (already short)
-     - “woocommerce” → “Woo”
-     - “documentation” → “docs”
-     - “performance” → “perf”
-     - “integration” → “integr”
-  3) If still too long: keep the first 3–4 most informative words (nouns-ish heuristic: longest words first, preserving original order).
-  4) If still too long: hard truncate to 28 characters.
-
-**Hard truncate rule**
-- `label = label[:28].rstrip()` (no trailing space)
-
-### 4.3) Fallback label
-If label becomes empty or garbage:
-- Use: `General` (or `Session`)
-- Still set metadata fields.
-
----
-
-## 5) Hook configuration wiring
-
-In your main OpenClaw configuration file, register the handler.
-
-### Example (YAML-ish)
-```yaml
-hooks:
-  on_turn_complete:
-    - name: auto_label_session
-      module: skills/session_labeler/auto_label_hook.py
-      enabled: true
-      settings:
-        trigger_after_user_requests: 3
-        max_label_chars: 28
-        relabel: false
-        sessions_dir: ".openclaw/sessions"
-```
-
-**Notes**
-- Use your actual event name.
-- `relabel: false` prevents churn.
-- If OpenClaw uses JS/TS hooks, implement in that language; logic remains identical.
-
----
-
-## 6) Pseudocode (hook handler)
-
-```python
-def on_turn_complete(event):
-    session_id = event.session_id
-    workspace_root = event.workspace_root
-
-    path = resolve_session_json_path(workspace_root, session_id)
-    session = load_json(path)
-
-    # 1) Update request count
-    session["processed_user_requests"] = compute_processed_user_requests(session, event)
-
-    # 2) If already labeled, exit
-    if session.get("label"):
-        save_json(path, session)
-        return
-
-    # 3) If below threshold, exit
-    if session["processed_user_requests"] < 3:
-        save_json(path, session)
-        return
-
-    # 4) Gather first 3 user requests
-    reqs = first_three_user_requests(session, event)
-    if len(reqs) < 3:
-        save_json(path, session)
-        return
-
-    # 5) Call skill
-    raw_label = call_skill("session_labeler", {
-        "requests": reqs[:3],
-        "workspace_name": session.get("workspace_name") or event.workspace_name,
-        "max_chars": 28
-    })
-
-    # 6) Sanitize + enforce
-    label = sanitize(raw_label)
-    label = enforce_28_chars(label)
-
-    if not label:
-        label = "General"
-
-    # 7) Persist
-    session["label"] = label
-    session["label_source"] = "auto"
-    session["label_turn"] = 3
-    session["label_version"] = "1.0"
-    session["label_updated_at"] = now_iso_utc()
-
-    save_json(path, session)
-```
-
----
-
-## 7) Testing plan (must-pass)
-
-### 7.1 Unit tests: sanitize()
-Cases:
-- `"Stripe newsletter ideas\n"` → `Stripe newsletter ideas`
-- `"•  Woo config  "` → `Woo config`
-- `"Label."` → `Label`
-- `"\"Quoted Label\""` → `Quoted Label`
-
-### 7.2 Unit tests: enforce_28_chars()
-- Already short stays unchanged.
-- Very long label gets smart-shortened.
-- Still too long gets hard-truncated.
-- No trailing spaces.
-
-### 7.3 Integration tests: hook behavior
-- Session with < 3 requests → no label.
-- Session at exactly 3 requests → label created once.
-- Session with existing label → hook does not overwrite.
-- Session missing message history → safe no-op (or fallback to current request counting).
-
-### 7.4 Regression test: label stability
-- Run hook multiple times after labeling → label remains unchanged unless `relabel=true`.
-
----
-
-## 8) Operational considerations
-
-### Performance
-- Labeling runs **once per session** in the common case.
-- Keep LLM call small: only 3 requests + brief instructions.
-
-### Privacy
-- Only pass the first 3 user requests to the model.
-- Do not include tool logs, credentials, or file contents.
-
-### Observability
-Add logging:
-- when label is generated
-- raw label (debug only, optional)
-- final label + length
-
-### Feature flag
-Make it easy to toggle:
-
-```yaml
-auto_label_sessions: true
-```
-
----
-
-## 9) Optional enhancements (safe follow-ups)
-
-1. **Relabel at turn 6** if topic drift is detected (off by default).
-2. **Confidence scoring**: if model returns generic label, re-run with stronger constraints.
-3. **Local heuristic labeler** fallback when LLM unavailable:
-   - extract top nouns/keywords from first 3 requests
-   - join into 2–4 words, cap 28 chars
-
----
-
-## Implementation checklist (for the OpenClaw agent)
-
-- [ ] Identify session JSON storage location and confirm write permissions.
-- [ ] Identify correct lifecycle hook for “turn complete.”
-- [ ] Implement `resolve_session_json_path()`.
-- [ ] Implement request counting (`processed_user_requests`), using existing counters if available.
-- [ ] Implement `first_three_user_requests()` extraction.
-- [ ] Implement `session_labeler` skill with strict prompt and single-line output.
-- [ ] Implement `sanitize()` and `enforce_28_chars()` with tests.
-- [ ] Wire hook config into main OpenClaw config.
-- [ ] Run integration tests across a few real sessions.
-- [ ] Verify UI displays `label` from session JSON.
-
----
-
-## Done criteria
-- A new session with no manual label will automatically gain a stable label after the **third** user request completes.
-- Labels are always **≤ 28 characters**.
-- Existing labels are never overwritten unless explicitly configured.
+## Done Criteria
+
+- [x] Sessions get a descriptive label based on user requests.
+- [x] Labels are always **≤ 28 characters**.
+- [x] Existing labels are never overwritten (unless `relabel: true`).
+- [x] Hook follows OpenClaw conventions (HOOK.md + handler.ts, auto-discovery).
+- [x] 62 tests passing (unit + integration).
+- [ ] LLM client wired to OpenClaw's model runner (currently heuristic only).
+- [ ] Live labeling via `message:received` event (waiting on OpenClaw).
