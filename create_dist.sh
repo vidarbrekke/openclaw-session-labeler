@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Build the self-contained dist/ hook pack and bump version.
-# Compiles TypeScript to JS so installed hooks use .js (no runtime .ts imports).
+#
+# Output (dist/) contains only runtime assets — no node_modules, no source .ts.
+# Contents: package.json, LICENSE, CHANGELOG.md, install-session-labeler.sh,
+# README.md (from scripts/README.dist.md), VERSION, skill-stub/, hooks/session-labeler/
+# (handler.js + HOOK.md), src/ (compiled .js from build/).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,12 +42,25 @@ cp hooks/session-labeler/HOOK.md "$DIST_DIR/hooks/session-labeler/"
 
 # Copy metadata and scripts
 cp package.json "$DIST_DIR/"
+node -e "
+const fs = require('fs');
+const p = '$DIST_DIR/package.json';
+const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+// Dist pack is runtime-only; drop repo/dev scripts that reference missing files.
+delete pkg.scripts;
+delete pkg.devDependencies;
+fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+"
 cp LICENSE "$DIST_DIR/"
 cp CHANGELOG.md "$DIST_DIR/"
 cp scripts/install-session-labeler.sh "$DIST_DIR/"
 chmod +x "$DIST_DIR/install-session-labeler.sh"
 cp scripts/README.dist.md "$DIST_DIR/README.md"
 [[ -d scripts/skill-stub ]] && cp -r scripts/skill-stub "$DIST_DIR/"
+
+# Remove macOS archive metadata if present
+find "$DIST_DIR" -name ".DS_Store" -delete
+find "$DIST_DIR" -name "__MACOSX" -prune -exec rm -rf {} +
 
 # Write versioning info for dist
 echo "$VERSION" > "$DIST_DIR/VERSION"

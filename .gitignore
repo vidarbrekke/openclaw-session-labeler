@@ -10,6 +10,7 @@ env/
 .idea/
 .vscode/
 .DS_Store
+__MACOSX/
 *.swp
 *.swo
 

@@ -6,7 +6,8 @@ export interface TranscriptEntry {
   id?: string;
   parentId?: string;
   role?: string;
-  content?: string;
+  /** Message content; may be string or multimodal array / unknown structure */
+  content?: unknown;
   timestamp?: string;
   [key: string]: unknown;
 }
@@ -44,15 +45,21 @@ export interface LlmClient {
  * Configuration for the session-labeler hook.
  */
 export interface SessionLabelerConfig {
-  /** Number of user requests before labeling (default: 3) */
+  /** Minimum user messages required to run (default: 3; skip if ≤2) */
   triggerAfterRequests: number;
+  /** Max user messages to use for the label (default: 5; uses fewer if session has fewer) */
+  maxMessagesForLabel: number;
   /** Max label length in characters (default: 28) */
   maxLabelChars: number;
   /** Whether to overwrite existing labels (default: false) */
   relabel: boolean;
-  /** Where to persist labels */
-  persistenceMode: "session_json" | "sidecar_labels_json";
-  /** Fall back to sidecar labels.json if session JSON persistence fails */
+  /**
+   * Where to persist labels:
+   * - "session_json": write to labels.json by session id (durable) and update sessions.json entry when it still points at this session (canonical UI).
+   * - "labels_json": write only to labels.json by session id (no sessions.json). Same as legacy "sidecar_labels_json".
+   */
+  persistenceMode: "session_json" | "labels_json" | "sidecar_labels_json";
+  /** When session_json: fall back to labels.json only if sessions.json update fails (default true) */
   allowSidecarFallback: boolean;
   /** Command actions that should trigger labeling */
   triggerActions: string[];
@@ -60,6 +67,7 @@ export interface SessionLabelerConfig {
 
 export const DEFAULT_CONFIG: SessionLabelerConfig = {
   triggerAfterRequests: 3,
+  maxMessagesForLabel: 5,
   maxLabelChars: 28,
   relabel: false,
   persistenceMode: "session_json",

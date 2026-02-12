@@ -109,23 +109,25 @@ Optional settings:
 
 ## Development
 
+Do **not** ship `node_modules` in the repo or in distribution archives. Use a clean install for tests:
+
 ```bash
-npm install
-npm test           # Run all 72 tests
-npm run test:watch # Watch mode
-npm run typecheck  # TypeScript checks
-npm run validate   # Hook metadata + typecheck + tests + packaging dry-run
+npm ci
+npm test
+npm run typecheck
+npm run validate
 ```
 
 ### Creating the distributable (`dist/`)
 
 Run `./create_dist.sh` (or `npm run dist`) to build the self-contained hook pack:
 
-- Bumps the **patch** version in `package.json` (e.g. `0.1.0` → `0.1.1`)
-- Recreates `dist/` with only distributable files: `package.json`, `hooks/`, `src/`, `README.md`, `LICENSE`, `CHANGELOG.md`, `install-session-labeler.sh`
-- Writes `dist/VERSION` with the new version and build date
+- Bumps the **patch** version in `package.json`
+- Compiles TypeScript to `build/`, then copies only runtime assets to `dist/` (no `node_modules`, no source `.ts`)
+- Writes `dist/VERSION`
 
-The dist README is maintained in `scripts/README.dist.md` and copied to `dist/README.md`. Share the `dist/` folder (or zip it) for distribution.
+Share the `dist/` folder or zip it. When zipping, exclude junk:  
+`zip -r pack.zip dist -x "*node_modules*" "*__MACOSX*" "*.DS_Store"`
 
 ## Project Structure
 

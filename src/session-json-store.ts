@@ -71,3 +71,33 @@ export async function setLabelInSessionStore(
   await writeQueue;
 }
 
+export async function setLabelInSessionStoreBySessionId(
+  sessionsDir: string,
+  sessionId: string,
+  label: SessionLabel
+): Promise<boolean> {
+  const storePath = sessionsJsonPathFromSessionsDir(sessionsDir);
+  let updated = false;
+  writeQueue = writeQueue.then(async () => {
+    const store = await readSessionsStore(storePath);
+    for (const key of Object.keys(store)) {
+      const entry = store[key];
+      if (entry?.sessionId !== sessionId) continue;
+      store[key] = {
+        ...entry,
+        label: label.label,
+        label_source: label.label_source,
+        label_turn: label.label_turn,
+        label_version: label.label_version,
+        label_updated_at: label.label_updated_at,
+      };
+      updated = true;
+    }
+    if (updated) {
+      await writeSessionsStore(storePath, store);
+    }
+  });
+  await writeQueue;
+  return updated;
+}
+

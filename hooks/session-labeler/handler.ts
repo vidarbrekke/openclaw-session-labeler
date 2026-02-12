@@ -7,7 +7,7 @@
  * See HOOK.md for documentation.
  */
 
-import { join, dirname, basename } from "node:path";
+import { join, dirname, basename, resolve as pathResolve } from "node:path";
 import { homedir } from "node:os";
 import { readFile, readdir, stat } from "node:fs/promises";
 
@@ -20,7 +20,7 @@ import {
 } from "../../src/labels-store.js";
 import {
   getLabelFromSessionStore,
-  setLabelInSessionStore,
+  setLabelInSessionStoreBySessionId,
 } from "../../src/session-json-store.js";
 import { DEFAULT_CONFIG } from "../../src/types.js";
 import type { SessionLabel, LlmClient, SessionLabelerConfig } from "../../src/types.js";
@@ -32,7 +32,7 @@ import type { SessionLabel, LlmClient, SessionLabelerConfig } from "../../src/ty
 interface HookEvent {
   type: string;
   action: string;
-  sessionKey: string;
+  sessionKey?: string;
   timestamp: Date;
   messages: string[];
   context: {
@@ -90,7 +90,7 @@ async function labelSession(
   event: HookEvent,
   config: SessionLabelerConfig
 ): Promise<void> {
-  const sessionKey = event.sessionKey;
+  const sessionKey = typeof event.sessionKey === "string" ? event.sessionKey : "";
 
   // 1) Resolve paths
   const sessionsDir = resolveSessionsDir(event);
@@ -108,12 +108,14 @@ async function labelSession(
 
   const endingSessionId = basename(transcriptPath, ".jsonl");
 
-  // 3) Check if already labeled (by sessionKey in sessions.json or by sessionId in labels.json)
+  // 3) Check if already labeled
   if (!config.relabel) {
-    const existingByKey = await getExistingLabel(config, sessionsDir, sessionKey);
-    if (existingByKey) {
-      console.log(`[session-labeler] Session "${sessionKey}" already labeled: "${existingByKey.label}"`);
-      return;
+    if (sessionKey) {
+      const existingByKey = await getExistingLabel(config, sessionsDir, sessionKey);
+      if (existingByKey) {
+        console.log(`[session-labeler] Session "${sessionKey}" already labeled: "${existingByKey.label}"`);
+        return;
+      }
     }
     const labelsPath = labelsPathFromSessionsDir(sessionsDir);
     const existingById = await getLabel(labelsPath, endingSessionId);
@@ -123,12 +125,12 @@ async function labelSession(
     }
   }
 
-  // 4) Extract user messages
+  // 4) Extract user messages (up to maxMessagesForLabel)
   let userMessages: string[] = [];
   try {
     userMessages = await extractUserMessagesFromFile(
       transcriptPath,
-      config.triggerAfterRequests
+      config.maxMessagesForLabel
     );
   } catch {
     console.log("[session-labeler] No transcript found, skipping.");
@@ -142,14 +144,17 @@ async function labelSession(
     return;
   }
 
+  const messagesForLabel = userMessages.slice(0, config.maxMessagesForLabel);
+
   // 5) Generate label (LLM with heuristic fallback)
   const llm = createLlmClient(event);
   const label = await generateLabel(llm, {
-    requests: userMessages.slice(0, config.triggerAfterRequests),
+    requests: messagesForLabel,
     max_chars: config.maxLabelChars,
   });
 
   // 6) Persist by ending session id (so the previous session gets the label, not the new one)
+  // label_turn = threshold we require to run (triggerAfterRequests), not the count of messages used
   const sessionLabel: SessionLabel = {
     label,
     label_source: "auto",
@@ -173,10 +178,13 @@ function resolveSessionsDir(event: HookEvent): string | null {
     return dirname(sessionFile);
   }
 
-  // Try from config
+  // Try from config (resolve relative paths against workspaceDir or cwd)
   const agentConfig = event.context.cfg?.agents?.defaults;
   if (agentConfig?.sessionsDir && typeof agentConfig.sessionsDir === "string") {
-    return agentConfig.sessionsDir;
+    const dir = agentConfig.sessionsDir;
+    if (dir.startsWith("/")) return dir;
+    const base = event.context.workspaceDir ?? process.cwd();
+    return pathResolve(base, dir);
   }
 
   // Workspace fallback (testing harnesses, single-workspace setups)
@@ -186,7 +194,8 @@ function resolveSessionsDir(event: HookEvent): string | null {
   }
 
   // Per-agent fallback: agent:main:main -> ~/.openclaw/agents/main/sessions (desktop/multi-agent)
-  const agentMatch = event.sessionKey.match(/^agent:([^:]+)/);
+  const sk = typeof event.sessionKey === "string" ? event.sessionKey : "";
+  const agentMatch = sk.match(/^agent:([^:]+)/);
   if (agentMatch) {
     const agentId = agentMatch[1];
     const base = process.env.OPENCLAW_HOME || homedir();
@@ -201,8 +210,11 @@ async function getExistingLabel(
   sessionsDir: string,
   sessionKey: string
 ): Promise<SessionLabel | undefined> {
-  if (config.persistenceMode === "sidecar_labels_json") {
-    return getLabel(labelsPathFromSessionsDir(sessionsDir), sessionKey);
+  if (
+    config.persistenceMode === "labels_json" ||
+    config.persistenceMode === "sidecar_labels_json"
+  ) {
+    return undefined;
   }
   return getLabelFromSessionStore(sessionsDir, sessionKey);
 }
@@ -215,22 +227,29 @@ async function persistLabel(
   endingSessionId: string
 ): Promise<void> {
   const labelsPath = labelsPathFromSessionsDir(sessionsDir);
-  // Always persist by session id so the session we labeled (e.g. the previous one after /new) has its label.
-  await setLabel(labelsPath, endingSessionId, sessionLabel);
+  const labelsOnly =
+    config.persistenceMode === "labels_json" ||
+    config.persistenceMode === "sidecar_labels_json";
 
-  if (config.persistenceMode === "sidecar_labels_json") {
+  if (labelsOnly) {
+    await setLabel(labelsPath, endingSessionId, sessionLabel);
     return;
   }
 
-  // Also update sessions.json for sessionKey only if the current entry still points to this session
-  // (so we don't attach the label to the new session when OpenClaw already switched).
+  // session_json: write to labels.json by id (durable) then update sessions.json when entry still points here.
+  await setLabel(labelsPath, endingSessionId, sessionLabel);
+
+  // Also write into sessions.json (canonical metadata) via reverse lookup by sessionId.
   try {
-    const path = join(sessionsDir, "sessions.json");
-    const raw = await readFile(path, "utf-8");
-    const store = JSON.parse(raw) as Record<string, { sessionId?: string }>;
-    const entry = store[sessionKey];
-    if (entry?.sessionId === endingSessionId) {
-      await setLabelInSessionStore(sessionsDir, sessionKey, sessionLabel);
+    const updated = await setLabelInSessionStoreBySessionId(
+      sessionsDir,
+      endingSessionId,
+      sessionLabel
+    );
+    if (!updated && sessionKey) {
+      console.warn(
+        `[session-labeler] session_json mode: no sessions.json entry found for ended session ${endingSessionId}; label kept in labels.json`
+      );
     }
   } catch (err) {
     if (!config.allowSidecarFallback) throw err;
@@ -250,6 +269,7 @@ async function resolveTranscriptPath(
   event: HookEvent,
   sessionsDir: string
 ): Promise<string | null> {
+  const sessionKey = typeof event.sessionKey === "string" ? event.sessionKey : "";
   // Use explicit session file if available
   const sessionFile =
     event.context.sessionEntry?.sessionFile ?? event.context.sessionFile;
@@ -261,7 +281,24 @@ async function resolveTranscriptPath(
   const sessionId =
     event.context.sessionEntry?.sessionId ?? event.context.sessionId;
   if (sessionId) {
-    return join(sessionsDir, `${sessionId}.jsonl`);
+    const canonical = join(sessionsDir, `${sessionId}.jsonl`);
+    try {
+      await stat(canonical);
+      return canonical;
+    } catch {
+      // Naming may vary; fallback: newest .jsonl whose name contains sessionId
+      const files = await readdir(sessionsDir);
+      const candidates = files
+        .filter((f) => f.endsWith(".jsonl") && f.includes(sessionId))
+        .map((f) => join(sessionsDir, f));
+      if (candidates.length > 0) {
+        const withMtime = await Promise.all(
+          candidates.map(async (p) => ({ p, mtime: (await stat(p)).mtimeMs }))
+        );
+        withMtime.sort((a, b) => b.mtime - a.mtime);
+        return withMtime[0].p;
+      }
+    }
   }
 
   // Fallback: read sessions.json. When OpenClaw runs the hook after /new, it may have
@@ -272,7 +309,7 @@ async function resolveTranscriptPath(
     const path = join(sessionsDir, "sessions.json");
     const raw = await readFile(path, "utf-8");
     const store = JSON.parse(raw) as Record<string, { sessionId?: string; sessionFile?: string }>;
-    const entry = store[event.sessionKey];
+    const entry = sessionKey ? store[sessionKey] : undefined;
     const currentId = entry?.sessionId && typeof entry.sessionId === "string" ? entry.sessionId : null;
 
     const files = await readdir(sessionsDir);
@@ -332,23 +369,32 @@ function createLlmClient(event: HookEvent): LlmClient {
 
   return {
     async complete(prompt: string): Promise<string> {
-      const response = await fetch(`${endpoint}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.2,
-          max_tokens: 40,
-        }),
-      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+      let response: Response;
+      try {
+        response = await fetch(`${endpoint}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "user", content: prompt }],
+            temperature: 0.2,
+            max_tokens: 40,
+          }),
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
 
       if (!response.ok) {
         const body = await response.text();
-        throw new Error(`LLM request failed (${response.status}): ${body}`);
+        const compact = body.replace(/\s+/g, " ").slice(0, 500);
+        throw new Error(`LLM request failed (${response.status}): ${compact}`);
       }
 
       const data = (await response.json()) as {
@@ -377,6 +423,9 @@ function resolveConfig(event: HookEvent): SessionLabelerConfig {
   if (typeof entry.triggerAfterRequests === "number") {
     merged.triggerAfterRequests = entry.triggerAfterRequests;
   }
+  if (typeof entry.maxMessagesForLabel === "number") {
+    merged.maxMessagesForLabel = entry.maxMessagesForLabel;
+  }
   if (typeof entry.maxLabelChars === "number") {
     merged.maxLabelChars = entry.maxLabelChars;
   }
@@ -385,6 +434,7 @@ function resolveConfig(event: HookEvent): SessionLabelerConfig {
   }
   if (
     entry.persistenceMode === "session_json" ||
+    entry.persistenceMode === "labels_json" ||
     entry.persistenceMode === "sidecar_labels_json"
   ) {
     merged.persistenceMode = entry.persistenceMode;

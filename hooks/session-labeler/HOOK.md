@@ -1,6 +1,6 @@
 ---
 name: session-labeler
-description: "Auto-labels sessions with a short descriptive name (≤28 chars) after 3 user requests"
+description: "Auto-labels sessions with a short descriptive name (≤28 chars) from first 3–5 user messages when session ends"
 metadata:
   openclaw:
     emoji: "🏷️"
@@ -17,15 +17,15 @@ metadata:
 
 # Session Labeler
 
-Automatically assigns a short, descriptive session label (≤ 28 characters) when a session ends (`/new`, `/reset`, `/stop`). The label captures what the conversation was about based on the first 3 user requests.
+Automatically assigns a short, descriptive session label (≤ 28 characters) when a session ends (`/new`, `/reset`, `/stop`). The label is based on the first 3–5 user messages (configurable); sessions with 2 or fewer are skipped.
 
 ## What It Does
 
 1. When you issue `/new`, `/reset`, or `/stop`, this hook inspects the **ending** session's transcript.
-2. Extracts the first 3 user messages.
+2. Extracts the first 3–5 user messages (up to `maxMessagesForLabel`).
 3. Uses the configured LLM to generate a concise label (2–5 words).
 4. Sanitizes and enforces the 28-character limit deterministically.
-5. Persists the label into `sessions.json` metadata by default (or `labels.json` sidecar when configured).
+5. Persists the label: `persistenceMode` `session_json` (default) writes to `labels.json` by session id and updates `sessions.json` when the entry matches; `labels_json` writes only to `labels.json`.
 
 ## Why command-end events instead of per-message?
 
@@ -53,6 +53,7 @@ In your OpenClaw config:
         "session-labeler": {
           "enabled": true,
           "triggerAfterRequests": 3,
+          "maxMessagesForLabel": 5,
           "maxLabelChars": 28,
           "relabel": false,
           "persistenceMode": "session_json",
@@ -67,5 +68,5 @@ In your OpenClaw config:
 
 ## Requirements
 
-- Node.js must be installed.
+- Node.js 18+ must be installed (`fetch` support required).
 - `workspace.dir` must be configured (needed to locate session transcripts).

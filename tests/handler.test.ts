@@ -125,6 +125,32 @@ describe("session-labeler hook handler", () => {
     expect(sessions["agent:main:main"].label_turn).toBe(3);
   });
 
+  it("uses up to 5 user messages for the label when session has 5+", async () => {
+    const transcript = makeTranscript([
+      "First request",
+      "Second request",
+      "Third request",
+      "Fourth request",
+      "Fifth request",
+    ]);
+    await writeFile(
+      join(sessionsDir, "test-session-001.jsonl"),
+      transcript
+    );
+    await writeFile(
+      join(sessionsDir, "sessions.json"),
+      JSON.stringify({ "agent:main:main": { sessionId: "test-session-001" } })
+    );
+
+    await handler(makeEvent());
+
+    const storePath = join(sessionsDir, "sessions.json");
+    const raw = await readFile(storePath, "utf-8");
+    const sessions = JSON.parse(raw);
+    expect(sessions["agent:main:main"].label).toBeTruthy();
+    expect(sessions["agent:main:main"].label_turn).toBe(3);
+  });
+
   it("does not overwrite an existing label", async () => {
     // Pre-create a labeled session entry
     const storePath = join(sessionsDir, "sessions.json");
@@ -196,6 +222,25 @@ describe("session-labeler hook handler", () => {
     await expect(readFile(storePath, "utf-8")).rejects.toThrow();
   });
 
+  it("does not crash when sessionKey is missing", async () => {
+    const transcript = makeTranscript([
+      "Question one",
+      "Question two",
+      "Question three",
+    ]);
+    await writeFile(join(sessionsDir, "test-session-001.jsonl"), transcript);
+
+    const event = makeEvent() as ReturnType<typeof makeEvent> & { sessionKey?: string };
+    delete event.sessionKey;
+
+    await handler(event);
+
+    const labelsPath = join(sessionsDir, "labels.json");
+    const raw = await readFile(labelsPath, "utf-8");
+    const labels = JSON.parse(raw);
+    expect(labels["test-session-001"]?.label).toBeTruthy();
+  });
+
   it("also triggers on /stop action", async () => {
     const transcript = makeTranscript([
       "Help me fix checkout taxes",
@@ -245,6 +290,65 @@ describe("session-labeler hook handler", () => {
     const raw = await readFile(labelsPath, "utf-8");
     const labels = JSON.parse(raw);
     expect(labels["test-session-001"]?.label).toBeTruthy();
+  });
+
+  it("supports labels_json persistence mode (labels only)", async () => {
+    const transcript = makeTranscript([
+      "First task",
+      "Second task",
+      "Third task",
+    ]);
+    await writeFile(join(sessionsDir, "test-session-001.jsonl"), transcript);
+
+    const event = makeEvent({
+      cfg: {
+        hooks: {
+          internal: {
+            entries: {
+              "session-labeler": {
+                persistenceMode: "labels_json",
+              },
+            },
+          },
+        },
+      },
+    });
+    await handler(event);
+
+    const labelsPath = join(sessionsDir, "labels.json");
+    const raw = await readFile(labelsPath, "utf-8");
+    const labels = JSON.parse(raw);
+    expect(labels["test-session-001"]?.label).toBeTruthy();
+  });
+
+  it("session_json mode updates the ended session entry by sessionId", async () => {
+    const transcript = makeTranscript([
+      "First ended-session request",
+      "Second ended-session request",
+      "Third ended-session request",
+    ]);
+    await writeFile(join(sessionsDir, "test-session-001.jsonl"), transcript);
+
+    // Simulate /new race: current session key already points to a NEW session.
+    // The ended session is still present under a different key.
+    await writeFile(
+      join(sessionsDir, "sessions.json"),
+      JSON.stringify(
+        {
+          "agent:main:main": { sessionId: "new-session-002" },
+          "agent:main:history:test-session-001": { sessionId: "test-session-001" },
+        },
+        null,
+        2
+      )
+    );
+
+    await handler(makeEvent());
+
+    const raw = await readFile(join(sessionsDir, "sessions.json"), "utf-8");
+    const sessions = JSON.parse(raw);
+    expect(sessions["agent:main:history:test-session-001"]?.label).toBeTruthy();
+    expect(sessions["agent:main:main"]?.label).toBeUndefined();
   });
 
   it("respects triggerAfterRequests from hook config", async () => {
