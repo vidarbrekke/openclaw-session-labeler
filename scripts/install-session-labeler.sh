@@ -70,6 +70,40 @@ attempt_restart() {
   fi
 }
 
+# Ensure hooks.internal.entries["session-labeler"] exists and is enabled in OpenClaw config.
+# Without this, the hook is installed but "Not configured" and won't run.
+ensure_hook_config_entry() {
+  local config_file="${OPENCLAW_CONFIG:-$HOME/.openclaw/openclaw.json}"
+  if [[ ! -f "$config_file" ]]; then
+    warn "OpenClaw config not found at $config_file; skipping config entry."
+    return 0
+  fi
+  if ! node -e "
+    const fs = require('fs');
+    const path = process.argv[1];
+    const hookName = process.argv[2];
+    let cfg;
+    try { cfg = JSON.parse(fs.readFileSync(path, 'utf8')); } catch (e) {
+      console.error('Could not read config:', e.message);
+      process.exit(1);
+    }
+    if (!cfg.hooks) cfg.hooks = {};
+    if (!cfg.hooks.internal) cfg.hooks.internal = {};
+    if (cfg.hooks.internal.enabled !== true) cfg.hooks.internal.enabled = true;
+    if (!cfg.hooks.internal.entries) cfg.hooks.internal.entries = {};
+    const entry = cfg.hooks.internal.entries[hookName] || {};
+    if (entry.enabled !== true) {
+      cfg.hooks.internal.entries[hookName] = { ...entry, enabled: true };
+      fs.writeFileSync(path, JSON.stringify(cfg, null, 2) + '\n');
+      console.log('Added', hookName, 'to hooks.internal.entries with enabled: true');
+    }
+  " "$config_file" "$HOOK_NAME" 2>/dev/null; then
+    warn "Could not update OpenClaw config; you may need to add session-labeler to hooks.internal.entries manually."
+    return 1
+  fi
+  return 0
+}
+
 verify_enabled() {
   log "Verifying hook registration..."
 
@@ -131,6 +165,10 @@ main() {
   run_or_fail "Installing hook pack" openclaw hooks install "$HOOK_PATH"
 
   run_or_fail "Enabling hook: $HOOK_NAME" openclaw hooks enable "$HOOK_NAME"
+
+  # Ensure hooks.internal.entries["session-labeler"] { enabled: true } so the hook is actually used
+  log "Ensuring session-labeler is in OpenClaw config (hooks.internal.entries)..."
+  ensure_hook_config_entry || true
 
   # Install skill stub so the hook appears in the desktop Skills list (Clawbot shows ~/.openclaw/skills/)
   SKILLS_DIR="${OPENCLAW_SKILLS_DIR:-$HOME/.openclaw/skills}"
