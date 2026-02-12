@@ -106,6 +106,10 @@ describe("session-labeler hook handler", () => {
       join(sessionsDir, "test-session-001.jsonl"),
       transcript
     );
+    await writeFile(
+      join(sessionsDir, "sessions.json"),
+      JSON.stringify({ "agent:main:main": { sessionId: "test-session-001" } })
+    );
 
     await handler(makeEvent());
 
@@ -164,6 +168,10 @@ describe("session-labeler hook handler", () => {
       join(sessionsDir, "test-session-001.jsonl"),
       transcript
     );
+    await writeFile(
+      join(sessionsDir, "sessions.json"),
+      JSON.stringify({ "agent:main:main": { sessionId: "test-session-001" } })
+    );
 
     await handler(makeEvent());
 
@@ -195,6 +203,10 @@ describe("session-labeler hook handler", () => {
       "Add payment gateway notes",
     ]);
     await writeFile(join(sessionsDir, "test-session-001.jsonl"), transcript);
+    await writeFile(
+      join(sessionsDir, "sessions.json"),
+      JSON.stringify({ "agent:main:main": { sessionId: "test-session-001" } })
+    );
 
     const event = makeEvent();
     event.action = "stop";
@@ -232,7 +244,7 @@ describe("session-labeler hook handler", () => {
     const labelsPath = join(sessionsDir, "labels.json");
     const raw = await readFile(labelsPath, "utf-8");
     const labels = JSON.parse(raw);
-    expect(labels["agent:main:main"]?.label).toBeTruthy();
+    expect(labels["test-session-001"]?.label).toBeTruthy();
   });
 
   it("respects triggerAfterRequests from hook config", async () => {

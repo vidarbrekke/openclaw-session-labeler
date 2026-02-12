@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Build the self-contained dist/ hook pack and bump version.
+# Compiles TypeScript to JS so installed hooks use .js (no runtime .ts imports).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_ROOT"
+
+# Build first: compile handler + src to build/ (avoids runtime .ts / missing module errors)
+echo "[create_dist] Building (tsc)..."
+npm run build
+[[ -d build ]] || { echo "[create_dist] ERROR: build/ not found after tsc"; exit 1; }
 
 # Bump patch version in package.json (e.g. 0.1.0 -> 0.1.1)
 VERSION="$(node -e "
@@ -20,14 +26,20 @@ echo "[create_dist] Version set to: $VERSION"
 # Clean and recreate dist
 DIST_DIR="$REPO_ROOT/dist"
 rm -rf "$DIST_DIR"
-mkdir -p "$DIST_DIR"
+mkdir -p "$DIST_DIR/hooks/session-labeler"
 
-# Copy only files that belong in the distributable hook pack
+# Copy compiled JS (handler + src) so runtime imports resolve
+for f in build/hooks/session-labeler/*.js; do
+  [[ -e "$f" ]] && cp "$f" "$DIST_DIR/hooks/session-labeler/"
+done
+cp -r build/src "$DIST_DIR/"
+# HOOK.md is not compiled; copy from source
+cp hooks/session-labeler/HOOK.md "$DIST_DIR/hooks/session-labeler/"
+
+# Copy metadata and scripts
 cp package.json "$DIST_DIR/"
 cp LICENSE "$DIST_DIR/"
 cp CHANGELOG.md "$DIST_DIR/"
-cp -r hooks "$DIST_DIR/"
-cp -r src "$DIST_DIR/"
 cp scripts/install-session-labeler.sh "$DIST_DIR/"
 chmod +x "$DIST_DIR/install-session-labeler.sh"
 cp scripts/README.dist.md "$DIST_DIR/README.md"
@@ -37,4 +49,4 @@ cp scripts/README.dist.md "$DIST_DIR/README.md"
 echo "$VERSION" > "$DIST_DIR/VERSION"
 echo "Built: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$DIST_DIR/VERSION"
 
-echo "[create_dist] Packed $DIST_DIR (version $VERSION)"
+echo "[create_dist] Packed $DIST_DIR (version $VERSION, compiled JS)"

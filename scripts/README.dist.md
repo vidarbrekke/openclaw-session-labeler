@@ -39,9 +39,10 @@ If you run `openclaw hooks install .` directly instead, OpenClaw will say **"hoo
 The script will:
 1. Install (or replace) the hook pack
 2. Enable `session-labeler`
-3. Install a **skill stub** into `~/.openclaw/skills/session-labeler/` so **Session Labeler** appears in the Clawbot desktop Skills list (the hook itself lives under Hooks; the stub is for visibility only)
-4. Try to restart the gateway (`openclaw gateway restart` / `openclaw restart`)
-5. Run verification (`hooks list` / `check` / `info`)
+3. Add `session-labeler` to `hooks.internal.entries` in your OpenClaw config so the hook is enabled by default (no manual config step).
+4. Install a **skill stub** into `~/.openclaw/skills/session-labeler/` so **Session Labeler** appears in the Clawbot desktop Skills list (the hook itself lives under Hooks; the stub is for visibility only)
+5. Try to restart the gateway (`openclaw gateway restart` / `openclaw restart`)
+6. Run verification (`hooks list` / `check` / `info`)
 
 Custom restart command:
 

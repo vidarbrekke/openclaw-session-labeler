@@ -7,7 +7,9 @@
  * See HOOK.md for documentation.
  */
 
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
+import { homedir } from "node:os";
+import { readFile, readdir, stat } from "node:fs/promises";
 
 import { extractUserMessagesFromFile } from "../../src/transcript.js";
 import { generateLabel } from "../../src/labeler.js";
@@ -70,6 +72,10 @@ const handler: HookHandler = async (event) => {
   }
 
   try {
+    // Log so gateway stdout shows hook ran (e.g. when running openclaw from terminal)
+    console.log(
+      `[session-labeler] Triggered: ${event.action} sessionKey=${event.sessionKey ?? "(missing)"}`
+    );
     await labelSession(event, config);
   } catch (err) {
     console.error(
@@ -93,20 +99,28 @@ async function labelSession(
     return;
   }
 
-  // 2) Check if already labeled (skip unless relabel is enabled)
-  if (!config.relabel) {
-    const existing = await getExistingLabel(config, sessionsDir, sessionKey);
-    if (existing) {
-      console.log(`[session-labeler] Session "${sessionKey}" already labeled: "${existing.label}"`);
-      return;
-    }
-  }
-
-  // 3) Resolve transcript path
-  const transcriptPath = resolveTranscriptPath(event, sessionsDir);
+  // 2) Resolve transcript path (we need it to know endingSessionId for persistence)
+  const transcriptPath = await resolveTranscriptPath(event, sessionsDir);
   if (!transcriptPath) {
     console.log("[session-labeler] No transcript found, skipping.");
     return;
+  }
+
+  const endingSessionId = basename(transcriptPath, ".jsonl");
+
+  // 3) Check if already labeled (by sessionKey in sessions.json or by sessionId in labels.json)
+  if (!config.relabel) {
+    const existingByKey = await getExistingLabel(config, sessionsDir, sessionKey);
+    if (existingByKey) {
+      console.log(`[session-labeler] Session "${sessionKey}" already labeled: "${existingByKey.label}"`);
+      return;
+    }
+    const labelsPath = labelsPathFromSessionsDir(sessionsDir);
+    const existingById = await getLabel(labelsPath, endingSessionId);
+    if (existingById) {
+      console.log(`[session-labeler] Session ${endingSessionId} already labeled: "${existingById.label}"`);
+      return;
+    }
   }
 
   // 4) Extract user messages
@@ -135,7 +149,7 @@ async function labelSession(
     max_chars: config.maxLabelChars,
   });
 
-  // 6) Persist
+  // 6) Persist by ending session id (so the previous session gets the label, not the new one)
   const sessionLabel: SessionLabel = {
     label,
     label_source: "auto",
@@ -144,8 +158,8 @@ async function labelSession(
     label_updated_at: new Date().toISOString(),
   };
 
-  await persistLabel(config, sessionsDir, sessionKey, sessionLabel);
-  console.log(`[session-labeler] Labeled "${sessionKey}": "${label}"`);
+  await persistLabel(config, sessionsDir, sessionKey, sessionLabel, endingSessionId);
+  console.log(`[session-labeler] Labeled "${endingSessionId}" (${sessionKey}): "${label}"`);
 }
 
 /**
@@ -165,10 +179,18 @@ function resolveSessionsDir(event: HookEvent): string | null {
     return agentConfig.sessionsDir;
   }
 
-  // Last-resort fallback for local testing harnesses
+  // Workspace fallback (testing harnesses, single-workspace setups)
   const workspaceDir = event.context.workspaceDir;
   if (workspaceDir) {
     return join(workspaceDir, ".openclaw", "sessions");
+  }
+
+  // Per-agent fallback: agent:main:main -> ~/.openclaw/agents/main/sessions (desktop/multi-agent)
+  const agentMatch = event.sessionKey.match(/^agent:([^:]+)/);
+  if (agentMatch) {
+    const agentId = agentMatch[1];
+    const base = process.env.OPENCLAW_HOME || homedir();
+    return join(base, ".openclaw", "agents", agentId, "sessions");
   }
 
   return null;
@@ -189,32 +211,45 @@ async function persistLabel(
   config: SessionLabelerConfig,
   sessionsDir: string,
   sessionKey: string,
-  sessionLabel: SessionLabel
+  sessionLabel: SessionLabel,
+  endingSessionId: string
 ): Promise<void> {
+  const labelsPath = labelsPathFromSessionsDir(sessionsDir);
+  // Always persist by session id so the session we labeled (e.g. the previous one after /new) has its label.
+  await setLabel(labelsPath, endingSessionId, sessionLabel);
+
   if (config.persistenceMode === "sidecar_labels_json") {
-    await setLabel(labelsPathFromSessionsDir(sessionsDir), sessionKey, sessionLabel);
     return;
   }
 
+  // Also update sessions.json for sessionKey only if the current entry still points to this session
+  // (so we don't attach the label to the new session when OpenClaw already switched).
   try {
-    await setLabelInSessionStore(sessionsDir, sessionKey, sessionLabel);
+    const path = join(sessionsDir, "sessions.json");
+    const raw = await readFile(path, "utf-8");
+    const store = JSON.parse(raw) as Record<string, { sessionId?: string }>;
+    const entry = store[sessionKey];
+    if (entry?.sessionId === endingSessionId) {
+      await setLabelInSessionStore(sessionsDir, sessionKey, sessionLabel);
+    }
   } catch (err) {
     if (!config.allowSidecarFallback) throw err;
     console.warn(
-      "[session-labeler] session_json persistence failed; falling back to labels.json:",
+      "[session-labeler] session_json persistence failed; label stored in labels.json by session id:",
       err instanceof Error ? err.message : String(err)
     );
-    await setLabel(labelsPathFromSessionsDir(sessionsDir), sessionKey, sessionLabel);
   }
 }
 
 /**
  * Resolve transcript file path for the ending session.
+ * When event lacks sessionFile/sessionId (e.g. desktop/webchat), reads sessions.json
+ * to look up the session entry by sessionKey.
  */
-function resolveTranscriptPath(
+async function resolveTranscriptPath(
   event: HookEvent,
   sessionsDir: string
-): string | null {
+): Promise<string | null> {
   // Use explicit session file if available
   const sessionFile =
     event.context.sessionEntry?.sessionFile ?? event.context.sessionFile;
@@ -222,11 +257,49 @@ function resolveTranscriptPath(
     return sessionFile;
   }
 
-  // Derive from session ID
+  // Derive from session ID in context
   const sessionId =
     event.context.sessionEntry?.sessionId ?? event.context.sessionId;
   if (sessionId) {
     return join(sessionsDir, `${sessionId}.jsonl`);
+  }
+
+  // Fallback: read sessions.json. When OpenClaw runs the hook after /new, it may have
+  // already updated sessions.json to the NEW session — so the entry points to the new
+  // session, not the one that ended. We then pick the most recently modified .jsonl
+  // that is NOT the current entry (i.e. the session that just ended).
+  try {
+    const path = join(sessionsDir, "sessions.json");
+    const raw = await readFile(path, "utf-8");
+    const store = JSON.parse(raw) as Record<string, { sessionId?: string; sessionFile?: string }>;
+    const entry = store[event.sessionKey];
+    const currentId = entry?.sessionId && typeof entry.sessionId === "string" ? entry.sessionId : null;
+
+    const files = await readdir(sessionsDir);
+    const jsonlFiles = files.filter((f) => f.endsWith(".jsonl"));
+    const withMtime: { name: string; mtime: number }[] = [];
+    for (const f of jsonlFiles) {
+      try {
+        const s = await stat(join(sessionsDir, f));
+        withMtime.push({ name: f, mtime: s.mtimeMs });
+      } catch {
+        // skip
+      }
+    }
+    withMtime.sort((a, b) => b.mtime - a.mtime);
+
+    // Prefer: transcript that is not the "current" session (current is the new one after /new)
+    for (const { name } of withMtime) {
+      const sessionIdFromFile = name.slice(0, -6);
+      if (currentId != null && sessionIdFromFile === currentId) continue;
+      return join(sessionsDir, name);
+    }
+    // If no other file, use the first (most recent) — hook may have run before OpenClaw updated
+    if (withMtime.length > 0) {
+      return join(sessionsDir, withMtime[0].name);
+    }
+  } catch {
+    // ignore
   }
 
   return null;
